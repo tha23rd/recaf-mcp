@@ -58,6 +58,7 @@ public class McpServerManager {
 				.serverInfo("recaf-mcp", "0.1.0")
 				.capabilities(ServerCapabilities.builder()
 						.tools(true)
+						.resources(false, true)
 						.build())
 				.build();
 

@@ -1,5 +1,6 @@
 package dev.recafmcp;
 
+import dev.recafmcp.server.McpServerManager;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import org.slf4j.Logger;
@@ -16,6 +17,7 @@ public class RecafMcpPlugin implements Plugin {
 
 	private final WorkspaceManager workspaceManager;
 	private final DecompilerManager decompilerManager;
+	private McpServerManager serverManager;
 
 	@Inject
 	public RecafMcpPlugin(WorkspaceManager workspaceManager,
@@ -26,11 +28,22 @@ public class RecafMcpPlugin implements Plugin {
 
 	@Override
 	public void onEnable() {
-		logger.info("Recaf MCP Server plugin enabled");
+		logger.info("Recaf MCP Server plugin enabling...");
+		try {
+			serverManager = new McpServerManager();
+			serverManager.start();
+			logger.info("Recaf MCP Server plugin enabled successfully");
+		} catch (Exception e) {
+			logger.error("Failed to start MCP server", e);
+		}
 	}
 
 	@Override
 	public void onDisable() {
+		if (serverManager != null) {
+			serverManager.stop();
+			serverManager = null;
+		}
 		logger.info("Recaf MCP Server plugin disabled");
 	}
 }

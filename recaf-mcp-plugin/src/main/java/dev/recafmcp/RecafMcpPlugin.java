@@ -14,8 +14,10 @@ import software.coley.recaf.plugin.PluginInformation;
 import software.coley.recaf.services.callgraph.CallGraphService;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
+import software.coley.recaf.services.compile.JavacCompiler;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
 import software.coley.recaf.services.mapping.MappingApplierService;
+import software.coley.recaf.services.phantom.PhantomGenerator;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.io.ResourceImporter;
@@ -34,6 +36,8 @@ public class RecafMcpPlugin implements Plugin {
 	private final MappingApplierService mappingApplier;
 	private final AggregateMappingManager mappingManager;
 	private final ResourceImporter resourceImporter;
+	private final JavacCompiler javacCompiler;
+	private final PhantomGenerator phantomGenerator;
 	private McpServerManager serverManager;
 
 	@Inject
@@ -44,7 +48,9 @@ public class RecafMcpPlugin implements Plugin {
 	                      InheritanceGraphService inheritanceGraphService,
 	                      MappingApplierService mappingApplier,
 	                      AggregateMappingManager mappingManager,
-	                      ResourceImporter resourceImporter) {
+	                      ResourceImporter resourceImporter,
+	                      JavacCompiler javacCompiler,
+	                      PhantomGenerator phantomGenerator) {
 		this.workspaceManager = workspaceManager;
 		this.decompilerManager = decompilerManager;
 		this.searchService = searchService;
@@ -53,6 +59,8 @@ public class RecafMcpPlugin implements Plugin {
 		this.mappingApplier = mappingApplier;
 		this.mappingManager = mappingManager;
 		this.resourceImporter = resourceImporter;
+		this.javacCompiler = javacCompiler;
+		this.phantomGenerator = phantomGenerator;
 	}
 
 	@Override
@@ -78,7 +86,7 @@ public class RecafMcpPlugin implements Plugin {
 			new InheritanceToolProvider(mcp, workspaceManager, inheritanceGraphService).registerTools();
 			new MappingToolProvider(mcp, workspaceManager, mappingApplier, mappingManager).registerTools();
 			new CommentToolProvider(mcp, workspaceManager).registerTools();
-			new CompilerToolProvider(mcp, workspaceManager).registerTools();
+			new CompilerToolProvider(mcp, workspaceManager, javacCompiler, phantomGenerator).registerTools();
 			new AssemblerToolProvider(mcp, workspaceManager).registerTools();
 			new TransformToolProvider(mcp, workspaceManager).registerTools();
 			new AttachToolProvider(mcp, workspaceManager).registerTools();

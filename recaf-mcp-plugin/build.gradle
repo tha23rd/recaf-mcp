@@ -1,0 +1,137 @@
+plugins {
+    id 'java'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+    id 'top.hendrixshen.replace-token' version '1.1.2'
+    id 'com.gradleup.shadow' version '9.0.0-beta12'
+}
+
+group = 'dev.recafmcp'
+version = '0.1.0'
+
+ext {
+    // Recaf snapshot version (commit hash from JitPack)
+    recafVersion = 'd07958a5c7'
+    recafSnapshots = true
+
+    pluginMainClass = 'dev.recafmcp.RecafMcpPlugin'
+    pluginName = 'Recaf MCP Server'
+    pluginDesc = 'MCP server for autonomous Java reverse engineering via LLM agents'
+    pluginId = group + '.' + project.name
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    sourceCompatibility = JavaVersion.VERSION_22
+    targetCompatibility = JavaVersion.VERSION_22
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+}
+
+configurations.configureEach {
+    exclude group: 'org.checkerframework'
+    exclude group: 'com.google.code.findbugs'
+    exclude group: 'com.google.errorprone'
+    exclude group: 'com.google.j2objc'
+    exclude group: 'org.jetbrains', module: 'annotations'
+    exclude group: 'com.android.tools'
+    exclude group: 'com.ibm.icu'
+}
+
+configurations {
+    // Dependencies provided by Recaf at runtime (don't shade these)
+    recafProvided
+    compileOnly.extendsFrom(recafProvided)
+
+    // Dependencies we need to shade into the plugin JAR
+    shade
+    implementation.extendsFrom(shade)
+}
+
+dependencies {
+    // Recaf (provided at runtime, not shaded)
+    if (recafSnapshots) {
+        recafProvided "com.github.Col-E.Recaf:recaf-core:${recafVersion}"
+        recafProvided "com.github.Col-E.Recaf:recaf-ui:${recafVersion}"
+    } else {
+        recafProvided "software.coley:recaf-core:${recafVersion}"
+        recafProvided "software.coley:recaf-ui:${recafVersion}"
+    }
+
+    // MCP SDK (shaded into plugin JAR)
+    shade platform('io.modelcontextprotocol.sdk:mcp-bom:0.17.2')
+    shade 'io.modelcontextprotocol.sdk:mcp'
+
+    // Embedded HTTP server - Jetty 12.1 with ee11 (Jakarta Servlet 6.1)
+    shade 'org.eclipse.jetty:jetty-server:12.1.6'
+    shade 'org.eclipse.jetty.ee11:jetty-ee11-servlet:12.1.6'
+
+    // TOON serialization (for token-efficient responses)
+    shade 'dev.toonformat:jtoon:1.0.8'
+
+    // Test
+    testImplementation platform('org.junit:junit-bom:5.11.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.mockito:mockito-core:5.14.2'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+javafx {
+    version = '22.0.1'
+    modules = ['javafx.base', 'javafx.graphics', 'javafx.controls', 'javafx.media']
+}
+
+replaceToken {
+    targetSourceSets.set([sourceSets.main])
+    replace("##ID##", project.ext.pluginId)
+    replace("##NAME##", project.ext.pluginName)
+    replace("##DESC##", project.ext.pluginDesc)
+    replace("##VERSION##", project.version)
+}
+
+// ServiceLoader entry for Recaf plugin discovery
+tasks.register('setupServiceEntry') {
+    outputs.dir(temporaryDir)
+    doFirst {
+        new File(temporaryDir, "META-INF/services").mkdirs()
+        new File(temporaryDir, "META-INF/services/software.coley.recaf.plugin.Plugin").text = project.ext.pluginMainClass
+    }
+}
+
+// Shadow JAR: bundle MCP SDK, Jetty, and TOON into the plugin JAR
+// Excludes Recaf's own dependencies (they're on the classpath at runtime)
+shadowJar {
+    configurations = [project.configurations.shade]
+    archiveClassifier.set('')
+
+    // Relocate to avoid classpath conflicts
+    relocate 'org.eclipse.jetty', 'dev.recafmcp.shadow.jetty'
+    relocate 'io.modelcontextprotocol', 'dev.recafmcp.shadow.mcp'
+    relocate 'dev.toonformat', 'dev.recafmcp.shadow.toon'
+
+    from(tasks.named('setupServiceEntry'))
+
+    mergeServiceFiles()
+}
+
+// Make the default jar task produce the shadow jar
+jar.enabled = false
+tasks.named('build').configure {
+    dependsOn shadowJar
+}
+
+// Run Recaf with plugin loaded
+tasks.register('runRecaf', JavaExec) {
+    dependsOn 'shadowJar'
+    classpath sourceSets.main.runtimeClasspath
+    mainClass = "software.coley.recaf.Main"
+    args("-r", "build/libs")
+}

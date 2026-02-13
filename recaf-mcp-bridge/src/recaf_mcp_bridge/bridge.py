@@ -22,7 +22,7 @@ class RecafMcpBridge:
 
     def __init__(self, port: int = 8085):
         self.port = port
-        self.url = f"http://localhost:{port}/mcp/message"
+        self.url = f"http://localhost:{port}/mcp"
         self.server = Server("recaf-mcp-bridge")
         self.backend: ClientSession | None = None
         self._register_handlers()

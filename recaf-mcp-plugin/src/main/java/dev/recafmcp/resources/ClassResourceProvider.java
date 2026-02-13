@@ -63,7 +63,7 @@ public class ClassResourceProvider {
 				.uriTemplate("recaf://class/{name}")
 				.name("class")
 				.description("Full class info and decompiled source for a specific class. " +
-						"Use the fully qualified class name in slash notation (e.g. com/example/MyClass).")
+						"Use the fully qualified class name in dot notation (e.g. com.example.MyClass).")
 				.mimeType("application/json")
 				.build();
 

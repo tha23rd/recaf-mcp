@@ -25,6 +25,19 @@ import software.coley.recaf.services.search.result.Results;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.IntInsnNode;
+import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TypeInsnNode;
+import org.objectweb.asm.tree.VarInsnNode;
+import org.objectweb.asm.ClassReader;
+import software.coley.recaf.util.AsmInsnUtil;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -262,20 +275,137 @@ public class SearchToolProvider extends AbstractToolProvider {
 	private void registerSearchInstructions() {
 		Tool tool = Tool.builder()
 				.name("search-instructions")
-				.description("Search for specific bytecode instruction patterns in classes. " +
-						"[NOT YET IMPLEMENTED] Will support searching for instruction sequences " +
-						"matching given opcode/operand patterns.")
+				.description("Search for bytecode instructions matching a pattern across all classes. " +
+						"Matches against opcode names (e.g. 'INVOKEVIRTUAL', 'GETSTATIC', 'LDC') and " +
+						"operand text (class/method/field references, constants). " +
+						"The pattern is a case-insensitive regex matched against a text representation " +
+						"of each instruction.")
 				.inputSchema(createSchema(
-						Map.of("pattern", stringParam("Instruction pattern to search for (not yet implemented)")),
+						Map.of(
+								"pattern", stringParam("Regex pattern to match against instruction text " +
+										"(e.g. 'INVOKEVIRTUAL.*println', 'GETSTATIC.*System/out', 'LDC.*password')"),
+								"maxClasses", intParam("Maximum number of classes to search (default: 200)"),
+								"maxResultsPerClass", intParam("Maximum matching instructions per class (default: 20)")
+						),
 						List.of("pattern")
 				))
 				.build();
-		registerTool(tool, (exchange, args) -> createTextResult(
-				"Instruction search is not yet implemented. " +
-						"This tool will allow searching for bytecode instruction patterns " +
-						"(e.g., specific opcode sequences, operand patterns) across all classes in the workspace. " +
-						"Use 'search-text-in-decompilation' as an alternative for finding code patterns.")
-		);
+		registerTool(tool, (exchange, args) -> {
+			String patternStr = getString(args, "pattern");
+			int maxClasses = getInt(args, "maxClasses", 200);
+			int maxResultsPerClass = getInt(args, "maxResultsPerClass", 20);
+			maxClasses = Math.clamp(maxClasses, 1, 1000);
+			maxResultsPerClass = Math.clamp(maxResultsPerClass, 1, 100);
+
+			Workspace workspace = requireWorkspace();
+			Pattern compiledPattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
+
+			List<Map<String, Object>> classMatches = new ArrayList<>();
+			int totalSearched = 0;
+			int totalMatches = 0;
+
+			List<ClassPathNode> classNodes = workspace.jvmClassesStream()
+					.limit(maxClasses)
+					.toList();
+
+			for (ClassPathNode cpn : classNodes) {
+				ClassInfo classInfo = cpn.getValue();
+				if (!classInfo.isJvmClass()) continue;
+
+				JvmClassInfo jvmClass = classInfo.asJvmClass();
+				totalSearched++;
+
+				try {
+					ClassReader reader = jvmClass.getClassReader();
+					ClassNode classNode = new ClassNode();
+					reader.accept(classNode, ClassReader.SKIP_FRAMES);
+
+					List<Map<String, Object>> methodMatches = new ArrayList<>();
+
+					for (MethodNode methodNode : classNode.methods) {
+						InsnList instructions = methodNode.instructions;
+						if (instructions == null) continue;
+
+						int matchesInMethod = 0;
+						List<Map<String, Object>> insnMatches = new ArrayList<>();
+
+						for (int i = 0; i < instructions.size(); i++) {
+							AbstractInsnNode insn = instructions.get(i);
+							if (insn.getOpcode() < 0) continue; // Skip labels, frames, line numbers
+
+							String insnText = formatInstruction(insn);
+							if (compiledPattern.matcher(insnText).find()) {
+								if (matchesInMethod < maxResultsPerClass) {
+									LinkedHashMap<String, Object> match = new LinkedHashMap<>();
+									match.put("index", i);
+									match.put("instruction", insnText);
+									insnMatches.add(match);
+								}
+								matchesInMethod++;
+								totalMatches++;
+							}
+						}
+
+						if (!insnMatches.isEmpty()) {
+							LinkedHashMap<String, Object> methodMatch = new LinkedHashMap<>();
+							methodMatch.put("methodName", methodNode.name);
+							methodMatch.put("methodDescriptor", methodNode.desc);
+							methodMatch.put("matchCount", matchesInMethod);
+							methodMatch.put("matches", insnMatches);
+							methodMatches.add(methodMatch);
+						}
+					}
+
+					if (!methodMatches.isEmpty()) {
+						LinkedHashMap<String, Object> classMatch = new LinkedHashMap<>();
+						classMatch.put("className", classInfo.getName());
+						classMatch.put("methods", methodMatches);
+						classMatches.add(classMatch);
+					}
+				} catch (Exception e) {
+					logger.debug("Failed to analyze instructions for class '{}'", classInfo.getName(), e);
+				}
+			}
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("pattern", patternStr);
+			result.put("classesSearched", totalSearched);
+			result.put("classesWithMatches", classMatches.size());
+			result.put("totalInstructionMatches", totalMatches);
+			result.put("results", classMatches);
+			if (totalSearched >= maxClasses) {
+				result.put("warning", "Search was limited to " + maxClasses +
+						" classes. Increase 'maxClasses' to search more.");
+			}
+			return createJsonResult(result);
+		});
+	}
+
+	/**
+	 * Format a bytecode instruction as a human-readable string for pattern matching.
+	 *
+	 * @param insn The ASM instruction node.
+	 * @return A string representation including opcode name and operands.
+	 */
+	private static String formatInstruction(AbstractInsnNode insn) {
+		String opcodeName = AsmInsnUtil.getInsnName(insn.getOpcode());
+		if (opcodeName == null) opcodeName = "UNKNOWN(" + insn.getOpcode() + ")";
+
+		return switch (insn) {
+			case MethodInsnNode min ->
+					opcodeName + " " + min.owner + "." + min.name + min.desc;
+			case FieldInsnNode fin ->
+					opcodeName + " " + fin.owner + "." + fin.name + " " + fin.desc;
+			case TypeInsnNode tin ->
+					opcodeName + " " + tin.desc;
+			case LdcInsnNode ldc ->
+					opcodeName + " " + ldc.cst;
+			case IntInsnNode iin ->
+					opcodeName + " " + iin.operand;
+			case VarInsnNode vin ->
+					opcodeName + " " + vin.var;
+			default -> opcodeName;
+		};
 	}
 
 	// ---- search-files ----

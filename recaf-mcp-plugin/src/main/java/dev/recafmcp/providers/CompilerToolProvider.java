@@ -1,12 +1,24 @@
 package dev.recafmcp.providers;
 
 import io.modelcontextprotocol.server.McpSyncServer;
-import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
+import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.builder.JvmClassInfoBuilder;
+import software.coley.recaf.services.compile.CompileMap;
+import software.coley.recaf.services.compile.CompilerDiagnostic;
+import software.coley.recaf.services.compile.CompilerResult;
+import software.coley.recaf.services.compile.JavacArgumentsBuilder;
+import software.coley.recaf.services.compile.JavacCompiler;
+import software.coley.recaf.services.phantom.PhantomGenerationException;
+import software.coley.recaf.services.phantom.PhantomGenerator;
+import software.coley.recaf.services.phantom.GeneratedPhantomWorkspaceResource;
 import software.coley.recaf.services.workspace.WorkspaceManager;
+import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,8 +32,16 @@ import java.util.Map;
 public class CompilerToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(CompilerToolProvider.class);
 
-	public CompilerToolProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
+	private final JavacCompiler javacCompiler;
+	private final PhantomGenerator phantomGenerator;
+
+	public CompilerToolProvider(McpSyncServer server,
+	                            WorkspaceManager workspaceManager,
+	                            JavacCompiler javacCompiler,
+	                            PhantomGenerator phantomGenerator) {
 		super(server, workspaceManager);
+		this.javacCompiler = javacCompiler;
+		this.phantomGenerator = phantomGenerator;
 	}
 
 	@Override
@@ -48,13 +68,49 @@ public class CompilerToolProvider extends AbstractToolProvider {
 		registerTool(tool, (exchange, args) -> {
 			String className = getString(args, "className");
 			String source = getString(args, "source");
-			requireWorkspace();
+			Workspace workspace = requireWorkspace();
+
+			if (!JavacCompiler.isAvailable()) {
+				return createErrorResult("Java compiler (javac) is not available in this runtime. " +
+						"Ensure Recaf is running on a JDK, not a JRE.");
+			}
+
+			// Convert dot notation to internal format (slashes) for the compiler
+			String internalName = className.replace('.', '/');
+
+			CompilerResult compilerResult = compileSource(internalName, source, workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-			result.put("status", "stub");
+			List<Map<String, Object>> diagnosticsList = formatDiagnostics(compilerResult.getDiagnostics());
+
+			if (!compilerResult.wasSuccess()) {
+				result.put("status", "error");
+				result.put("className", className);
+				result.put("diagnostics", diagnosticsList);
+				if (compilerResult.getException() != null) {
+					result.put("exception", compilerResult.getException().getMessage());
+				}
+				return createJsonResult(result);
+			}
+
+			// Apply compiled classes to workspace
+			CompileMap compilations = compilerResult.getCompilations();
+			JvmClassBundle bundle = workspace.getPrimaryResource().getJvmClassBundle();
+			List<String> appliedClasses = new ArrayList<>();
+
+			for (Map.Entry<String, byte[]> entry : compilations.entrySet()) {
+				String compiledName = entry.getKey();
+				byte[] bytecode = entry.getValue();
+				JvmClassInfo classInfo = new JvmClassInfoBuilder(bytecode).build();
+				bundle.put(classInfo);
+				appliedClasses.add(compiledName);
+				logger.info("Applied compiled class: {}", compiledName);
+			}
+
+			result.put("status", "success");
 			result.put("className", className);
-			result.put("message", "Java compilation requires integration with Recaf's JavacCompiler. " +
-					"This tool will compile the provided source and replace the class in the workspace.");
+			result.put("appliedClasses", appliedClasses);
+			result.put("diagnostics", diagnosticsList);
 			return createJsonResult(result);
 		});
 	}
@@ -76,12 +132,25 @@ public class CompilerToolProvider extends AbstractToolProvider {
 		registerTool(tool, (exchange, args) -> {
 			String className = getString(args, "className");
 			String source = getString(args, "source");
-			requireWorkspace();
+			Workspace workspace = requireWorkspace();
+
+			if (!JavacCompiler.isAvailable()) {
+				return createErrorResult("Java compiler (javac) is not available in this runtime. " +
+						"Ensure Recaf is running on a JDK, not a JRE.");
+			}
+
+			String internalName = className.replace('.', '/');
+			CompilerResult compilerResult = compileSource(internalName, source, workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-			result.put("status", "stub");
+			List<Map<String, Object>> diagnosticsList = formatDiagnostics(compilerResult.getDiagnostics());
+
+			result.put("status", compilerResult.wasSuccess() ? "ok" : "error");
 			result.put("className", className);
-			result.put("message", "This tool will compile without applying, returning only compiler diagnostics for validation.");
+			result.put("diagnostics", diagnosticsList);
+			if (compilerResult.getException() != null) {
+				result.put("exception", compilerResult.getException().getMessage());
+			}
 			return createJsonResult(result);
 		});
 	}
@@ -95,13 +164,55 @@ public class CompilerToolProvider extends AbstractToolProvider {
 				.inputSchema(createSchema(Map.of(), List.of()))
 				.build();
 		registerTool(tool, (exchange, args) -> {
-			requireWorkspace();
+			Workspace workspace = requireWorkspace();
 
-			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-			result.put("status", "stub");
-			result.put("message", "Phantom class generation creates stub classes for missing dependencies. " +
-					"This will use Recaf's PhantomGenerator to resolve compilation classpath gaps.");
-			return createJsonResult(result);
+			try {
+				GeneratedPhantomWorkspaceResource phantoms =
+						phantomGenerator.createPhantomsForWorkspace(workspace);
+				workspace.addSupportingResource(phantoms);
+
+				int phantomCount = 0;
+				JvmClassBundle phantomBundle = phantoms.getJvmClassBundle();
+				if (phantomBundle != null) {
+					phantomCount = phantomBundle.size();
+				}
+
+				LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+				result.put("status", "success");
+				result.put("phantomClassesGenerated", phantomCount);
+				result.put("message", "Generated " + phantomCount + " phantom classes and added to workspace.");
+				return createJsonResult(result);
+			} catch (PhantomGenerationException e) {
+				logger.error("Phantom generation failed", e);
+				return createErrorResult("Phantom generation failed: " + e.getMessage());
+			}
 		});
+	}
+
+	// ---- Helpers ----
+
+	private CompilerResult compileSource(String internalClassName, String source, Workspace workspace) {
+		var arguments = new JavacArgumentsBuilder()
+				.withClassName(internalClassName)
+				.withClassSource(source)
+				.withDebugVariables(true)
+				.withDebugLineNumbers(true)
+				.withDebugSourceName(true)
+				.build();
+		return javacCompiler.compile(arguments, workspace, null);
+	}
+
+	private static List<Map<String, Object>> formatDiagnostics(List<CompilerDiagnostic> diagnostics) {
+		List<Map<String, Object>> list = new ArrayList<>();
+		if (diagnostics == null) return list;
+		for (CompilerDiagnostic d : diagnostics) {
+			LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+			entry.put("level", d.level().name());
+			entry.put("line", d.line());
+			entry.put("column", d.column());
+			entry.put("message", d.message());
+			list.add(entry);
+		}
+		return list;
 	}
 }

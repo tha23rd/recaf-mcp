@@ -1,7 +1,6 @@
 plugins {
     id 'java'
     id 'org.openjfx.javafxplugin' version '0.1.0'
-    id 'top.hendrixshen.replace-token' version '1.1.2'
     id 'com.gradleup.shadow' version '9.0.0-beta12'
 }
 
@@ -90,12 +89,32 @@ javafx {
     modules = ['javafx.base', 'javafx.graphics', 'javafx.controls', 'javafx.media']
 }
 
-replaceToken {
-    targetSourceSets.set([sourceSets.main])
-    replace("##ID##", project.ext.pluginId)
-    replace("##NAME##", project.ext.pluginName)
-    replace("##DESC##", project.ext.pluginDesc)
-    replace("##VERSION##", project.version)
+// Generate BuildConfig.java with plugin metadata constants
+def generatedSrcDir = layout.buildDirectory.dir('generated/sources/buildconfig/java/main')
+sourceSets.main.java.srcDir(generatedSrcDir)
+
+tasks.register('generateBuildConfig') {
+    outputs.dir(generatedSrcDir)
+    doFirst {
+        def dir = generatedSrcDir.get().asFile.toPath().resolve('dev/recafmcp')
+        dir.toFile().mkdirs()
+        dir.resolve('BuildConfig.java').toFile().text = """\
+package dev.recafmcp;
+
+/** Auto-generated plugin metadata constants. */
+public final class BuildConfig {
+    public static final String PLUGIN_ID = "${project.ext.pluginId}";
+    public static final String PLUGIN_NAME = "${project.ext.pluginName}";
+    public static final String PLUGIN_DESC = "${project.ext.pluginDesc}";
+    public static final String PLUGIN_VERSION = "${project.version}";
+    private BuildConfig() {}
+}
+"""
+    }
+}
+
+tasks.named('compileJava').configure {
+    dependsOn 'generateBuildConfig'
 }
 
 // ServiceLoader entry for Recaf plugin discovery

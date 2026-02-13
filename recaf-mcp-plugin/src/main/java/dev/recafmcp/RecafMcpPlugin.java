@@ -11,7 +11,8 @@ import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 
 @Dependent
-@PluginInformation(id = "##ID##", version = "##VERSION##", name = "##NAME##", description = "##DESC##")
+@PluginInformation(id = BuildConfig.PLUGIN_ID, version = BuildConfig.PLUGIN_VERSION,
+		name = BuildConfig.PLUGIN_NAME, description = BuildConfig.PLUGIN_DESC)
 public class RecafMcpPlugin implements Plugin {
 	private static final Logger logger = Logging.get(RecafMcpPlugin.class);
 

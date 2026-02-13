@@ -10,6 +10,18 @@ import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
+import software.coley.recaf.services.mapping.aggregate.AggregatedMappings;
+import software.coley.recaf.services.mapping.IntermediateMappings;
+import software.coley.recaf.services.mapping.data.ClassMapping;
+import software.coley.recaf.services.mapping.data.FieldMapping;
+import software.coley.recaf.services.mapping.data.MethodMapping;
+import software.coley.recaf.services.workspace.io.PathWorkspaceExportConsumer;
+import software.coley.recaf.services.workspace.io.WorkspaceCompressType;
+import software.coley.recaf.services.workspace.io.WorkspaceExportOptions;
+import software.coley.recaf.services.workspace.io.WorkspaceExporter;
+import software.coley.recaf.services.workspace.io.WorkspaceOutputType;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -27,12 +39,15 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(WorkspaceToolProvider.class);
 
 	private final ResourceImporter resourceImporter;
+	private final AggregateMappingManager aggregateMappingManager;
 
 	public WorkspaceToolProvider(McpSyncServer server,
 	                             WorkspaceManager workspaceManager,
-	                             ResourceImporter resourceImporter) {
+	                             ResourceImporter resourceImporter,
+	                             AggregateMappingManager aggregateMappingManager) {
 		super(server, workspaceManager);
 		this.resourceImporter = resourceImporter;
+		this.aggregateMappingManager = aggregateMappingManager;
 	}
 
 	@Override
@@ -116,16 +131,59 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 	private void registerWorkspaceExport() {
 		Tool tool = Tool.builder()
 				.name("workspace-export")
-				.description("Export the current workspace to a file")
+				.description("Export the current workspace to a file. Produces a JAR/ZIP or directory " +
+						"containing all classes and resources from the primary resource.")
 				.inputSchema(createSchema(
-						Map.of("outputPath", stringParam("Absolute path for the exported file")),
+						Map.of(
+								"outputPath", stringParam("Absolute path for the exported file (e.g. '/tmp/output.jar')"),
+								"outputType", stringParam("Output type: 'FILE' for JAR/ZIP or 'DIRECTORY' for exploded output (default: FILE)"),
+								"compress", stringParam("Compression mode: 'MATCH_ORIGINAL', 'SMART', 'ALWAYS', or 'NEVER' (default: MATCH_ORIGINAL)"),
+								"bundleSupporting", boolParam("Include supporting resources in the export (default: false)")
+						),
 						List.of("outputPath")
 				))
 				.build();
 		registerTool(tool, (exchange, args) -> {
-			requireWorkspace();
-			getString(args, "outputPath");
-			return createTextResult("Export is not yet implemented. The workspace export API requires additional integration work.");
+			String outputPath = getString(args, "outputPath");
+			String outputTypeStr = getOptionalString(args, "outputType", "FILE");
+			String compressStr = getOptionalString(args, "compress", "MATCH_ORIGINAL");
+			boolean bundleSupporting = getBoolean(args, "bundleSupporting", false);
+			Workspace workspace = requireWorkspace();
+
+			WorkspaceOutputType outputType;
+			try {
+				outputType = WorkspaceOutputType.valueOf(outputTypeStr.toUpperCase());
+			} catch (IllegalArgumentException e) {
+				return createErrorResult("Invalid output type: '" + outputTypeStr + "'. Use 'FILE' or 'DIRECTORY'.");
+			}
+
+			WorkspaceCompressType compressType;
+			try {
+				compressType = WorkspaceCompressType.valueOf(compressStr.toUpperCase());
+			} catch (IllegalArgumentException e) {
+				return createErrorResult("Invalid compression type: '" + compressStr +
+						"'. Use 'MATCH_ORIGINAL', 'SMART', 'ALWAYS', or 'NEVER'.");
+			}
+
+			Path output = Path.of(outputPath);
+			PathWorkspaceExportConsumer consumer = new PathWorkspaceExportConsumer(output);
+			WorkspaceExportOptions options = new WorkspaceExportOptions(compressType, outputType, consumer);
+			options.setBundleSupporting(bundleSupporting);
+
+			WorkspaceExporter exporter = options.create();
+			try {
+				exporter.export(workspace);
+			} catch (IOException e) {
+				throw new RuntimeException("Failed to export workspace to '" + outputPath + "': " + e.getMessage(), e);
+			}
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("status", "exported");
+			result.put("outputPath", outputPath);
+			result.put("outputType", outputType.name());
+			result.put("compression", compressType.name());
+			result.put("bundleSupporting", bundleSupporting);
+			return createJsonResult(result);
 		});
 	}
 
@@ -187,13 +245,75 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 	private void registerWorkspaceGetHistory() {
 		Tool tool = Tool.builder()
 				.name("workspace-get-history")
-				.description("Get undo/redo history information for the current workspace")
+				.description("Get modification history for the current workspace session. Shows all " +
+						"mapping operations (class/method/field/variable renames) applied via the " +
+						"aggregate mapping manager, plus workspace resource information.")
 				.inputSchema(createSchema(Map.of(), List.of()))
 				.build();
 		registerTool(tool, (exchange, args) -> {
-			requireWorkspace();
-			return createTextResult("Workspace history tracking is not yet implemented. " +
-					"This will provide undo/redo information once integrated with Recaf's change tracking API.");
+			Workspace workspace = requireWorkspace();
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+
+			// Workspace resource summary
+			WorkspaceResource primary = workspace.getPrimaryResource();
+			result.put("primaryJvmClassCount", primary.getJvmClassBundle().size());
+			result.put("primaryFileCount", primary.getFileBundle().size());
+			result.put("supportingResourceCount", workspace.getSupportingResources().size());
+
+			// Aggregate mappings (all renames applied during this session)
+			AggregatedMappings aggregated = aggregateMappingManager.getAggregatedMappings();
+			if (aggregated != null) {
+				IntermediateMappings intermediate = aggregated.exportIntermediate();
+
+				// Class renames
+				List<Map<String, Object>> classRenames = new ArrayList<>();
+				for (Map.Entry<String, ClassMapping> entry : intermediate.getClasses().entrySet()) {
+					LinkedHashMap<String, Object> rename = new LinkedHashMap<>();
+					ClassMapping cm = entry.getValue();
+					rename.put("oldName", cm.getOldName());
+					rename.put("newName", cm.getNewName());
+					classRenames.add(rename);
+				}
+
+				// Field renames
+				List<Map<String, Object>> fieldRenames = new ArrayList<>();
+				for (Map.Entry<String, List<FieldMapping>> entry : intermediate.getFields().entrySet()) {
+					for (FieldMapping fm : entry.getValue()) {
+						LinkedHashMap<String, Object> rename = new LinkedHashMap<>();
+						rename.put("owner", fm.getOwnerName());
+						rename.put("oldName", fm.getOldName());
+						rename.put("newName", fm.getNewName());
+						rename.put("descriptor", fm.getDesc());
+						fieldRenames.add(rename);
+					}
+				}
+
+				// Method renames
+				List<Map<String, Object>> methodRenames = new ArrayList<>();
+				for (Map.Entry<String, List<MethodMapping>> entry : intermediate.getMethods().entrySet()) {
+					for (MethodMapping mm : entry.getValue()) {
+						LinkedHashMap<String, Object> rename = new LinkedHashMap<>();
+						rename.put("owner", mm.getOwnerName());
+						rename.put("oldName", mm.getOldName());
+						rename.put("newName", mm.getNewName());
+						rename.put("descriptor", mm.getDesc());
+						methodRenames.add(rename);
+					}
+				}
+
+				LinkedHashMap<String, Object> mappingHistory = new LinkedHashMap<>();
+				mappingHistory.put("classRenames", classRenames);
+				mappingHistory.put("fieldRenames", fieldRenames);
+				mappingHistory.put("methodRenames", methodRenames);
+				mappingHistory.put("totalMappings",
+						classRenames.size() + fieldRenames.size() + methodRenames.size());
+				result.put("mappingHistory", mappingHistory);
+			} else {
+				result.put("mappingHistory", "No aggregate mappings available.");
+			}
+
+			return createJsonResult(result);
 		});
 	}
 

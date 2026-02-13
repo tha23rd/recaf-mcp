@@ -6,17 +6,27 @@ import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
+import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.member.MethodMember;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
+import software.coley.recaf.services.mapping.Mappings;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
+import software.coley.recaf.services.mapping.aggregate.AggregatedMappings;
+import software.coley.recaf.services.mapping.format.InvalidMappingException;
+import software.coley.recaf.services.mapping.format.MappingFileFormat;
+import software.coley.recaf.services.mapping.format.MappingFormatManager;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * MCP tool provider for mapping and renaming operations.
@@ -30,14 +40,17 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 	private final MappingApplierService mappingApplierService;
 	private final AggregateMappingManager aggregateMappingManager;
+	private final MappingFormatManager mappingFormatManager;
 
 	public MappingToolProvider(McpSyncServer server,
 	                           WorkspaceManager workspaceManager,
 	                           MappingApplierService mappingApplierService,
-	                           AggregateMappingManager aggregateMappingManager) {
+	                           AggregateMappingManager aggregateMappingManager,
+	                           MappingFormatManager mappingFormatManager) {
 		super(server, workspaceManager);
 		this.mappingApplierService = mappingApplierService;
 		this.aggregateMappingManager = aggregateMappingManager;
+		this.mappingFormatManager = mappingFormatManager;
 	}
 
 	@Override
@@ -199,13 +212,97 @@ public class MappingToolProvider extends AbstractToolProvider {
 	private void registerRenameVariable() {
 		Tool tool = Tool.builder()
 				.name("rename-variable")
-				.description("Rename a local variable in a method. Not yet implemented.")
-				.inputSchema(createSchema(Map.of(), List.of()))
+				.description("Rename a local variable in a method. Uses Recaf's mapping API to apply " +
+						"variable-level renaming via the mapping applier service.")
+				.inputSchema(createSchema(
+						Map.of(
+								"className", stringParam("Fully qualified class name containing the method (dot or slash notation)"),
+								"methodName", stringParam("Name of the method containing the variable"),
+								"methodDescriptor", stringParam("JVM method descriptor of the method (e.g. '(Ljava/lang/String;)V')"),
+								"oldName", stringParam("Current name of the local variable"),
+								"newName", stringParam("New name for the local variable")
+						),
+						List.of("className", "methodName", "methodDescriptor", "oldName", "newName")
+				))
 				.build();
-		registerTool(tool, (exchange, args) ->
-				createTextResult("Variable renaming operates on decompiler output and is not yet implemented. " +
-						"Use rename-field or rename-method for bytecode-level renaming.")
-		);
+		registerTool(tool, (exchange, args) -> {
+			String className = getString(args, "className");
+			String methodName = getString(args, "methodName");
+			String methodDescriptor = getString(args, "methodDescriptor");
+			String oldName = getString(args, "oldName");
+			String newName = getString(args, "newName");
+			Workspace workspace = requireWorkspace();
+
+			String normalizedClass = ClassResolver.normalizeClassName(className);
+
+			// Verify the class exists
+			ClassPathNode pathNode = ClassResolver.resolveClass(workspace, normalizedClass);
+			if (pathNode == null) {
+				return createErrorResult(ErrorHelper.classNotFound(normalizedClass, workspace));
+			}
+
+			ClassInfo classInfo = pathNode.getValue();
+			String resolvedClassName = classInfo.getName();
+
+			// Verify the method exists and try to find the variable index
+			MethodMember method = classInfo.getDeclaredMethod(methodName, methodDescriptor);
+			if (method == null) {
+				return createErrorResult("Method '" + methodName + methodDescriptor +
+						"' not found in class '" + resolvedClassName + "'.");
+			}
+
+			// Find variable index from the local variable table
+			int varIndex = -1;
+			String varDesc = null;
+			var localVars = method.getLocalVariables();
+			if (localVars != null) {
+				for (var lv : localVars) {
+					if (lv.getName().equals(oldName)) {
+						varIndex = lv.getIndex();
+						varDesc = lv.getDescriptor();
+						break;
+					}
+				}
+			}
+
+			if (varIndex < 0) {
+				return createErrorResult("Local variable '" + oldName + "' not found in method '" +
+						methodName + methodDescriptor + "'. The class may not have debug information " +
+						"(local variable table). Available variables: " + formatLocalVars(localVars));
+			}
+
+			// Apply variable mapping: addVariable(owner, methodName, methodDesc, varDesc, oldName, index, newName)
+			IntermediateMappings mappings = new IntermediateMappings();
+			mappings.addVariable(resolvedClassName, methodName, methodDescriptor,
+					varDesc, oldName, varIndex, newName);
+
+			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
+			results.apply();
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("status", "renamed");
+			result.put("className", resolvedClassName);
+			result.put("methodName", methodName);
+			result.put("methodDescriptor", methodDescriptor);
+			result.put("oldVariableName", oldName);
+			result.put("newVariableName", newName);
+			result.put("variableIndex", varIndex);
+			return createJsonResult(result);
+		});
+	}
+
+	/**
+	 * Format local variable list for error messages.
+	 */
+	private static String formatLocalVars(List<? extends software.coley.recaf.info.member.LocalVariable> vars) {
+		if (vars == null || vars.isEmpty()) return "(none - no debug info)";
+		StringBuilder sb = new StringBuilder();
+		for (var lv : vars) {
+			if (!sb.isEmpty()) sb.append(", ");
+			sb.append(lv.getName()).append(" (index=").append(lv.getIndex())
+					.append(", desc=").append(lv.getDescriptor()).append(")");
+		}
+		return sb.toString();
 	}
 
 	// ---- mapping-apply ----
@@ -213,20 +310,68 @@ public class MappingToolProvider extends AbstractToolProvider {
 	private void registerMappingApply() {
 		Tool tool = Tool.builder()
 				.name("mapping-apply")
-				.description("Import and apply a mapping file to the current workspace. Supports various formats (SRG, ProGuard, Enigma, Tiny, etc.).")
+				.description("Parse and apply mapping text to the current workspace. Supports various formats " +
+						"(use 'mapping-list-formats' to see available formats). The mapping text is parsed " +
+						"according to the specified format and applied to all classes in the primary resource.")
 				.inputSchema(createSchema(
 						Map.of(
-								"filePath", stringParam("Path to the mapping file to import"),
-								"format", stringParam("Optional mapping format name. If omitted, the format will be auto-detected.")
+								"format", stringParam("Mapping format name (e.g. 'SRG', 'ProGuard', 'Enigma', 'Tiny-v1', 'Tiny-v2'). " +
+										"Use 'mapping-list-formats' to see available formats."),
+								"content", stringParam("The mapping file content as text")
 						),
-						List.of("filePath")
+						List.of("format", "content")
 				))
 				.build();
-		registerTool(tool, (exchange, args) ->
-				createTextResult("Mapping file import is not yet implemented. " +
-						"This tool will support importing mapping files in formats such as SRG, ProGuard, Enigma, Tiny v1, Tiny v2, and JADX. " +
-						"For now, use rename-class, rename-method, and rename-field to apply individual mappings.")
-		);
+		registerTool(tool, (exchange, args) -> {
+			String format = getString(args, "format");
+			String content = getString(args, "content");
+			Workspace workspace = requireWorkspace();
+
+			// Resolve the mapping format
+			MappingFileFormat mappingFormat = mappingFormatManager.createFormatInstance(format);
+			if (mappingFormat == null) {
+				Set<String> available = mappingFormatManager.getMappingFileFormats();
+				return createErrorResult("Unknown mapping format: '" + format + "'. Available formats: " + available);
+			}
+
+			// Parse the mapping text
+			IntermediateMappings parsedMappings;
+			try {
+				parsedMappings = mappingFormat.parse(content);
+			} catch (InvalidMappingException e) {
+				return createErrorResult("Failed to parse mapping content as '" + format + "': " + e.getMessage());
+			}
+			if (parsedMappings.isEmpty()) {
+				return createErrorResult("No mappings were parsed from the provided content. " +
+						"Ensure the content matches the '" + format + "' format.");
+			}
+
+			// Apply the parsed mappings
+			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(parsedMappings);
+			results.apply();
+
+			// Build summary of what was mapped
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("status", "applied");
+			result.put("format", mappingFormat.implementationName());
+			result.put("classMappings", parsedMappings.getClasses().size());
+			result.put("fieldMappings", countFieldMappings(parsedMappings));
+			result.put("methodMappings", countMethodMappings(parsedMappings));
+			result.put("variableMappings", countVariableMappings(parsedMappings));
+			return createJsonResult(result);
+		});
+	}
+
+	private static int countFieldMappings(IntermediateMappings mappings) {
+		return mappings.getFields().values().stream().mapToInt(List::size).sum();
+	}
+
+	private static int countMethodMappings(IntermediateMappings mappings) {
+		return mappings.getMethods().values().stream().mapToInt(List::size).sum();
+	}
+
+	private static int countVariableMappings(IntermediateMappings mappings) {
+		return mappings.getVariables().values().stream().mapToInt(List::size).sum();
 	}
 
 	// ---- mapping-export ----
@@ -234,20 +379,64 @@ public class MappingToolProvider extends AbstractToolProvider {
 	private void registerMappingExport() {
 		Tool tool = Tool.builder()
 				.name("mapping-export")
-				.description("Export the current aggregate mappings to a file in the specified format.")
+				.description("Export the current aggregate mappings (all renames applied during this session) " +
+						"as text in the specified format. Returns the mapping text content directly.")
 				.inputSchema(createSchema(
 						Map.of(
-								"outputPath", stringParam("File path where the exported mappings will be written"),
-								"format", stringParam("Optional mapping format name for export (e.g. 'SRG', 'ProGuard', 'Tiny v2')")
+								"format", stringParam("Mapping format name for export (e.g. 'SRG', 'ProGuard', 'Simple'). " +
+										"Use 'mapping-list-formats' to see available formats. Not all formats support export.")
 						),
-						List.of("outputPath")
+						List.of("format")
 				))
 				.build();
-		registerTool(tool, (exchange, args) ->
-				createTextResult("Mapping export is not yet implemented. " +
-						"This tool will support exporting the current aggregate mappings to formats such as SRG, ProGuard, Enigma, Tiny v1, Tiny v2, and JADX. " +
-						"The aggregate mappings track all rename operations applied during the current session.")
-		);
+		registerTool(tool, (exchange, args) -> {
+			String format = getString(args, "format");
+			requireWorkspace();
+
+			// Get current aggregate mappings
+			AggregatedMappings aggregated = aggregateMappingManager.getAggregatedMappings();
+			if (aggregated == null) {
+				return createErrorResult("No aggregate mapping manager is available. " +
+						"Ensure a workspace is open and mappings have been applied.");
+			}
+
+			IntermediateMappings intermediate = aggregated.exportIntermediate();
+			if (intermediate.isEmpty()) {
+				LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+				result.put("status", "empty");
+				result.put("message", "No mappings have been applied in the current session. " +
+						"Use rename-class, rename-method, rename-field, or mapping-apply first.");
+				return createJsonResult(result);
+			}
+
+			// Resolve the export format
+			MappingFileFormat mappingFormat = mappingFormatManager.createFormatInstance(format);
+			if (mappingFormat == null) {
+				Set<String> available = mappingFormatManager.getMappingFileFormats();
+				return createErrorResult("Unknown mapping format: '" + format + "'. Available formats: " + available);
+			}
+
+			if (!mappingFormat.supportsExportText()) {
+				return createErrorResult("The '" + format + "' format does not support text export. " +
+						"Try a different format such as 'Simple' or 'SRG'.");
+			}
+
+			String exportedText;
+			try {
+				exportedText = mappingFormat.exportText(aggregated);
+			} catch (InvalidMappingException e) {
+				return createErrorResult("Failed to export mappings as '" + format + "': " + e.getMessage());
+			}
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("status", "exported");
+			result.put("format", mappingFormat.implementationName());
+			result.put("classMappings", intermediate.getClasses().size());
+			result.put("fieldMappings", countFieldMappings(intermediate));
+			result.put("methodMappings", countMethodMappings(intermediate));
+			result.put("content", exportedText);
+			return createJsonResult(result);
+		});
 	}
 
 	// ---- mapping-list-formats ----
@@ -255,14 +444,30 @@ public class MappingToolProvider extends AbstractToolProvider {
 	private void registerMappingListFormats() {
 		Tool tool = Tool.builder()
 				.name("mapping-list-formats")
-				.description("List all available mapping file formats supported by Recaf.")
+				.description("List all available mapping file formats supported by Recaf, including " +
+						"their capabilities (field type differentiation, variable support, export support).")
 				.inputSchema(createSchema(Map.of(), List.of()))
 				.build();
-		registerTool(tool, (exchange, args) ->
-				createTextResult("Mapping format listing is not yet implemented. " +
-						"Recaf supports the following mapping formats: " +
-						"Simple, SRG, ProGuard, Enigma, Tiny v1, Tiny v2, and JADX. " +
-						"Each format has different capabilities for field type differentiation and variable mapping support.")
-		);
+		registerTool(tool, (exchange, args) -> {
+			Set<String> formatNames = mappingFormatManager.getMappingFileFormats();
+
+			List<Map<String, Object>> formats = new ArrayList<>();
+			for (String name : formatNames) {
+				MappingFileFormat format = mappingFormatManager.createFormatInstance(name);
+				if (format == null) continue;
+
+				LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+				entry.put("name", format.implementationName());
+				entry.put("supportsFieldTypeDifferentiation", format.doesSupportFieldTypeDifferentiation());
+				entry.put("supportsVariableTypeDifferentiation", format.doesSupportVariableTypeDifferentiation());
+				entry.put("supportsExport", format.supportsExportText());
+				formats.add(entry);
+			}
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("formatCount", formats.size());
+			result.put("formats", formats);
+			return createJsonResult(result);
+		});
 	}
 }

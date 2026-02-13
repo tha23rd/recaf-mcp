@@ -6,8 +6,19 @@ import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TypeInsnNode;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
+import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.match.StringPredicate;
@@ -20,8 +31,10 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * MCP tool provider for cross-reference (xref) analysis.
@@ -88,25 +101,104 @@ public class XRefToolProvider extends AbstractToolProvider {
 	private void registerXRefsFrom() {
 		Tool tool = Tool.builder()
 				.name("xrefs-from")
-				.description("Find all outgoing references from a method (what classes/members does this method reference). " +
-						"Requires bytecode analysis of the method body.")
+				.description("Find all outgoing references from a class or method. Analyzes bytecode " +
+						"to discover what classes, methods, and fields are referenced. " +
+						"If methodName is provided, only that method is analyzed; otherwise all methods " +
+						"in the class are analyzed.")
 				.inputSchema(createSchema(
 						Map.of(
-								"className", stringParam("Internal or dot-notation class name containing the method (required)"),
-								"methodName", stringParam("Method name to analyze (required)"),
-								"methodDescriptor", stringParam("Method descriptor (optional, helps disambiguate overloads)")
+								"className", stringParam("Internal or dot-notation class name to analyze (required)"),
+								"methodName", stringParam("Method name to analyze (optional, analyzes all methods if omitted)"),
+								"methodDescriptor", stringParam("Method descriptor to disambiguate overloads (optional)")
 						),
-						List.of("className", "methodName")
+						List.of("className")
 				))
 				.build();
 		registerTool(tool, (exchange, args) -> {
-			requireWorkspace();
-			getString(args, "className");
-			getString(args, "methodName");
-			return createTextResult(
-					"xrefs-from requires bytecode analysis - not yet implemented. " +
-					"Use 'xrefs-to' to find references to a target instead."
-			);
+			Workspace workspace = requireWorkspace();
+
+			String className = ClassResolver.normalizeClassName(getString(args, "className"));
+			String methodName = getOptionalString(args, "methodName", null);
+			String methodDescriptor = getOptionalString(args, "methodDescriptor", null);
+
+			// Resolve the class
+			ClassPathNode pathNode = ClassResolver.resolveClass(workspace, className);
+			if (pathNode == null) {
+				return createErrorResult(ErrorHelper.classNotFound(className, workspace));
+			}
+
+			ClassInfo classInfo = pathNode.getValue();
+			if (!classInfo.isJvmClass()) {
+				return createErrorResult("Class '" + className + "' is not a JVM class. " +
+						"xrefs-from only supports JVM bytecode analysis.");
+			}
+
+			JvmClassInfo jvmClass = classInfo.asJvmClass();
+			String resolvedClassName = classInfo.getName();
+
+			// Parse the class bytecode
+			ClassReader reader = jvmClass.getClassReader();
+			ClassNode classNode = new ClassNode();
+			reader.accept(classNode, ClassReader.SKIP_FRAMES);
+
+			// Collect outgoing references
+			List<Map<String, Object>> methodRefs = new ArrayList<>();
+			List<Map<String, Object>> fieldRefs = new ArrayList<>();
+			Set<String> typeRefs = new LinkedHashSet<>();
+
+			for (MethodNode mn : classNode.methods) {
+				// Filter to specific method if requested
+				if (methodName != null && !mn.name.equals(methodName)) continue;
+				if (methodDescriptor != null && !mn.desc.equals(methodDescriptor)) continue;
+
+				InsnList instructions = mn.instructions;
+				if (instructions == null) continue;
+
+				String methodContext = mn.name + mn.desc;
+
+				for (int i = 0; i < instructions.size(); i++) {
+					AbstractInsnNode insn = instructions.get(i);
+					switch (insn) {
+						case MethodInsnNode min -> {
+							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
+							ref.put("fromMethod", methodContext);
+							ref.put("targetOwner", min.owner);
+							ref.put("targetName", min.name);
+							ref.put("targetDescriptor", min.desc);
+							ref.put("type", "method");
+							methodRefs.add(ref);
+							typeRefs.add(min.owner);
+						}
+						case FieldInsnNode fin -> {
+							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
+							ref.put("fromMethod", methodContext);
+							ref.put("targetOwner", fin.owner);
+							ref.put("targetName", fin.name);
+							ref.put("targetDescriptor", fin.desc);
+							ref.put("type", "field");
+							fieldRefs.add(ref);
+							typeRefs.add(fin.owner);
+						}
+						case TypeInsnNode tin -> typeRefs.add(tin.desc);
+						default -> {
+							// Other instruction types don't produce xrefs
+						}
+					}
+				}
+			}
+
+			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+			result.put("className", resolvedClassName);
+			if (methodName != null) {
+				result.put("methodFilter", methodName + (methodDescriptor != null ? methodDescriptor : ""));
+			}
+			result.put("methodReferences", methodRefs);
+			result.put("fieldReferences", fieldRefs);
+			result.put("referencedTypes", typeRefs);
+			result.put("totalMethodRefs", methodRefs.size());
+			result.put("totalFieldRefs", fieldRefs.size());
+			result.put("totalTypeRefs", typeRefs.size());
+			return createJsonResult(result);
 		});
 	}
 

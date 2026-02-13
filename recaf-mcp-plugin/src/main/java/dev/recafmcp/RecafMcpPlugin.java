@@ -15,7 +15,7 @@ import software.coley.recaf.services.callgraph.CallGraphService;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
-import software.coley.recaf.services.mapping.MappingApplier;
+import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.io.ResourceImporter;
@@ -31,7 +31,7 @@ public class RecafMcpPlugin implements Plugin {
 	private final SearchService searchService;
 	private final CallGraphService callGraphService;
 	private final InheritanceGraphService inheritanceGraphService;
-	private final MappingApplier mappingApplier;
+	private final MappingApplierService mappingApplier;
 	private final AggregateMappingManager mappingManager;
 	private final ResourceImporter resourceImporter;
 	private McpServerManager serverManager;
@@ -42,7 +42,7 @@ public class RecafMcpPlugin implements Plugin {
 	                      SearchService searchService,
 	                      CallGraphService callGraphService,
 	                      InheritanceGraphService inheritanceGraphService,
-	                      MappingApplier mappingApplier,
+	                      MappingApplierService mappingApplier,
 	                      AggregateMappingManager mappingManager,
 	                      ResourceImporter resourceImporter) {
 		this.workspaceManager = workspaceManager;
@@ -58,7 +58,13 @@ public class RecafMcpPlugin implements Plugin {
 	@Override
 	public void onEnable() {
 		logger.info("Recaf MCP Server plugin enabling...");
+		// MCP SDK uses ServiceLoader internally. Recaf's plugin classloader is not the
+		// thread context classloader, so ServiceLoader won't find our shaded service
+		// entries unless we temporarily set it.
+		ClassLoader originalCl = Thread.currentThread().getContextClassLoader();
 		try {
+			Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
+
 			serverManager = new McpServerManager();
 			McpSyncServer mcp = serverManager.start();
 
@@ -85,6 +91,8 @@ public class RecafMcpPlugin implements Plugin {
 					13, 2);
 		} catch (Exception e) {
 			logger.error("Failed to start MCP server", e);
+		} finally {
+			Thread.currentThread().setContextClassLoader(originalCl);
 		}
 	}
 

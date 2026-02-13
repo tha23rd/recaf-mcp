@@ -8,7 +8,7 @@ import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.mapping.IntermediateMappings;
-import software.coley.recaf.services.mapping.MappingApplier;
+import software.coley.recaf.services.mapping.MappingApplierService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
 import software.coley.recaf.services.workspace.WorkspaceManager;
@@ -28,15 +28,15 @@ import java.util.Map;
 public class MappingToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(MappingToolProvider.class);
 
-	private final MappingApplier mappingApplier;
+	private final MappingApplierService mappingApplierService;
 	private final AggregateMappingManager aggregateMappingManager;
 
 	public MappingToolProvider(McpSyncServer server,
 	                           WorkspaceManager workspaceManager,
-	                           MappingApplier mappingApplier,
+	                           MappingApplierService mappingApplierService,
 	                           AggregateMappingManager aggregateMappingManager) {
 		super(server, workspaceManager);
-		this.mappingApplier = mappingApplier;
+		this.mappingApplierService = mappingApplierService;
 		this.aggregateMappingManager = aggregateMappingManager;
 	}
 
@@ -85,7 +85,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 			IntermediateMappings mappings = new IntermediateMappings();
 			mappings.addClass(resolvedOldName, normalizedNew);
 
-			MappingResults results = mappingApplier.applyToPrimaryResource(mappings);
+			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -132,7 +132,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 			IntermediateMappings mappings = new IntermediateMappings();
 			mappings.addMethod(resolvedClassName, methodDescriptor, methodName, newName);
 
-			MappingResults results = mappingApplier.applyToPrimaryResource(mappings);
+			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -181,7 +181,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 			IntermediateMappings mappings = new IntermediateMappings();
 			mappings.addField(resolvedClassName, fieldDescriptor, fieldName, newName);
 
-			MappingResults results = mappingApplier.applyToPrimaryResource(mappings);
+			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();

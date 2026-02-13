@@ -1,5 +1,9 @@
 package dev.recafmcp.server;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.modelcontextprotocol.json.McpJsonMapper;
+import io.modelcontextprotocol.json.jackson.JacksonMcpJsonMapper;
+import io.modelcontextprotocol.json.schema.jackson.DefaultJsonSchemaValidator;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
@@ -19,7 +23,7 @@ public class McpServerManager {
 
 	private static final String DEFAULT_HOST = "127.0.0.1";
 	private static final int DEFAULT_PORT = 8085;
-	private static final String MCP_ENDPOINT = "/mcp/message";
+	private static final String MCP_ENDPOINT = "/mcp";
 	private static final long STARTUP_TIMEOUT_MS = 5000;
 
 	private Server jettyServer;
@@ -49,13 +53,21 @@ public class McpServerManager {
 			return mcpServer;
 		}
 
-		// Build the streamable HTTP transport provider
+		// Explicitly construct the Jackson mapper and schema validator to avoid
+		// ServiceLoader failures in Recaf's plugin classloader environment.
+		McpJsonMapper jsonMapper = new JacksonMcpJsonMapper(new ObjectMapper());
+
+		// Build the streamable HTTP transport provider.
 		HttpServletStreamableServerTransportProvider transportProvider =
-				HttpServletStreamableServerTransportProvider.builder().build();
+				HttpServletStreamableServerTransportProvider.builder()
+						.jsonMapper(jsonMapper)
+						.build();
 
 		// Build the MCP sync server with capabilities
 		mcpServer = McpServer.sync(transportProvider)
 				.serverInfo("recaf-mcp", "0.1.0")
+				.jsonMapper(jsonMapper)
+				.jsonSchemaValidator(new DefaultJsonSchemaValidator())
 				.capabilities(ServerCapabilities.builder()
 						.tools(true)
 						.resources(false, true)
@@ -69,9 +81,9 @@ public class McpServerManager {
 		connector.setPort(port);
 		jettyServer.addConnector(connector);
 
-		ServletContextHandler contextHandler = new ServletContextHandler(ServletContextHandler.SESSIONS);
+		ServletContextHandler contextHandler = new ServletContextHandler();
 		contextHandler.setContextPath("/");
-		contextHandler.addServlet(new ServletHolder(transportProvider), MCP_ENDPOINT);
+		contextHandler.addServlet(new ServletHolder(transportProvider), "/*");
 		jettyServer.setHandler(contextHandler);
 
 		// Start Jetty on a daemon thread so it doesn't block Recaf shutdown

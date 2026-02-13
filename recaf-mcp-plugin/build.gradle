@@ -50,6 +50,7 @@ configurations {
     // Dependencies we need to shade into the plugin JAR
     shade
     implementation.extendsFrom(shade)
+
 }
 
 dependencies {
@@ -148,10 +149,47 @@ tasks.named('build').configure {
     dependsOn shadowJar
 }
 
-// Run Recaf with plugin loaded
+// Run Recaf with plugin loaded.
+// Expects a pre-built recaf.jar in run/ directory.
+// Copies the shadow JAR into Recaf's data directory (~/.config/Recaf/plugins/)
+// so Recaf discovers it at startup.
+// JavaFX JARs from the Gradle cache are added to --module-path since the
+// Homebrew/standard JDK does not bundle JavaFX.
 tasks.register('runRecaf', JavaExec) {
     dependsOn 'shadowJar'
-    classpath sourceSets.main.runtimeClasspath
-    mainClass = "software.coley.recaf.Main"
-    args("-r", "build/libs")
+    def recafJar = file('run/recaf.jar')
+    classpath = files(recafJar)
+    mainClass = 'software.coley.recaf.Main'
+    workingDir = file('run')
+    doFirst {
+        if (!recafJar.exists()) {
+            throw new GradleException("Place recaf.jar in run/ directory. " +
+                    "Download from https://github.com/Col-E/Recaf or copy from your Recaf installation.")
+        }
+        // Determine Recaf data directory and copy plugin there
+        def osName = System.getProperty('os.name', '').toLowerCase()
+        def recafDir
+        if (osName.contains('win')) {
+            recafDir = new File(System.getenv('APPDATA'), 'Recaf')
+        } else if (osName.contains('mac')) {
+            recafDir = new File(System.getProperty('user.home'), 'Library/Application Support/Recaf')
+        } else {
+            recafDir = new File(System.getProperty('user.home'), '.config/Recaf')
+        }
+        def pluginsDir = new File(recafDir, 'plugins')
+        pluginsDir.mkdirs()
+        project.copy {
+            from tasks.named('shadowJar').get().archiveFile
+            into pluginsDir
+        }
+        logger.lifecycle("Installed plugin to {}", pluginsDir)
+        // Resolve JavaFX platform JARs from the runtimeClasspath (populated by javafx plugin)
+        def jfxJars = configurations.runtimeClasspath.files.findAll { it.name.contains('javafx') }
+        def modulePath = jfxJars.collect { it.absolutePath }.join(File.pathSeparator)
+        jvmArgs += [
+                '--module-path', modulePath,
+                '--add-modules', 'javafx.base,javafx.graphics,javafx.controls,javafx.media',
+                '--add-opens', 'javafx.graphics/com.sun.javafx.application=ALL-UNNAMED'
+        ]
+    }
 }

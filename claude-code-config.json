@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "recaf": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/recaf-mcp/recaf-mcp-bridge", "recaf-mcp-bridge"],
+      "env": {}
+    }
+  }
+}

@@ -26,6 +26,38 @@ public class McpServerManager {
 	private static final String MCP_ENDPOINT = "/mcp";
 	private static final long STARTUP_TIMEOUT_MS = 5000;
 
+	/**
+	 * Resolves the MCP server host from env var or system property.
+	 * Priority: RECAF_MCP_HOST env > recaf.mcp.host sysprop > default
+	 */
+	public static String resolveHost() {
+		String env = System.getenv("RECAF_MCP_HOST");
+		if (env != null && !env.isBlank()) return env;
+		return System.getProperty("recaf.mcp.host", DEFAULT_HOST);
+	}
+
+	/**
+	 * Resolves the MCP server port from env var or system property.
+	 * Priority: RECAF_MCP_PORT env > recaf.mcp.port sysprop > default
+	 */
+	public static int resolvePort() {
+		String env = System.getenv("RECAF_MCP_PORT");
+		if (env != null && !env.isBlank()) {
+			try { return Integer.parseInt(env); }
+			catch (NumberFormatException e) {
+				logger.warn("Invalid RECAF_MCP_PORT '{}', using default {}", env, DEFAULT_PORT);
+			}
+		}
+		String prop = System.getProperty("recaf.mcp.port");
+		if (prop != null && !prop.isBlank()) {
+			try { return Integer.parseInt(prop); }
+			catch (NumberFormatException e) {
+				logger.warn("Invalid recaf.mcp.port '{}', using default {}", prop, DEFAULT_PORT);
+			}
+		}
+		return DEFAULT_PORT;
+	}
+
 	private Server jettyServer;
 	private McpSyncServer mcpServer;
 	private Thread serverThread;

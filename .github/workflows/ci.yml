@@ -10,18 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 22
+          java-version: |
+            11
+            22
 
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Run tests
         working-directory: recaf-mcp-plugin
-        run: ./gradlew test
+        run: JAVA_11_HOME=$JAVA_HOME_11_X64 ./gradlew test
 
       - name: Build shadow JAR
         working-directory: recaf-mcp-plugin
-        run: ./gradlew shadowJar
+        run: JAVA_11_HOME=$JAVA_HOME_11_X64 ./gradlew shadowJar

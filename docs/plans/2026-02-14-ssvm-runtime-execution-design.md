@@ -1,12 +1,14 @@
 # SSVM Runtime Execution Design
 
 **Issue**: recaf-mcp-62g
-**Status**: Approved design
+**Status**: Approved design (rev 2 — incorporates RE practitioner feedback)
 **Date**: 2026-02-14
 
 ## Summary
 
-Add sandboxed runtime execution of workspace classes using [SSVM](https://github.com/xxDark/SSVM) (a pure-Java bytecode interpreter). Two MCP tools in v1: `vm-invoke-method` and `vm-get-field`.
+Add sandboxed runtime execution of workspace classes using [SSVM](https://github.com/xxDark/SSVM) (a pure-Java bytecode interpreter). Three MCP tools in v1: `vm-invoke-method`, `vm-get-field`, and `vm-run-clinit`.
+
+**Key differentiator**: Stack trace override support. Obfuscators commonly use `Thread.getStackTrace()` for key derivation. SSVM's interpreter frames don't match real JVM frames, producing wrong keys. All three tools accept a `stackTraceOverride` parameter that intercepts `Thread.getStackTrace()` to return a user-specified synthetic trace, enabling correct execution of stack-introspection-dependent code.
 
 ## Why SSVM
 
@@ -30,7 +32,7 @@ Alternatives considered:
 Agent (MCP client)
   |
   v
-vm-invoke-method / vm-get-field  (MCP tools)
+vm-invoke-method / vm-get-field / vm-run-clinit  (MCP tools)
   |
   v
 SsvmExecutionProvider  (new tool provider)
@@ -41,12 +43,61 @@ SsvmExecutionProvider  (new tool provider)
   |       |       +-- SupplyingClassLoaderInstaller <-- reads bytecode from workspace
   |       |       +-- FileManager <-- captures stdout/stderr
   |       |       +-- Interpreter <-- max iterations limit
+  |       |       +-- InitializationController <-- whitelist-based clinit gating
+  |       |       +-- StackTraceInterceptor <-- synthetic stack trace injection
   |       |
   |       +---> WorkspaceManager.addWorkspaceOpenListener/CloseListener
   |               (auto-reset VM on workspace change)
   |
   +---> InvocationUtil / VMOperations  (SSVM APIs for method calls + field reads)
 ```
+
+## Cross-Cutting: Stack Trace Override
+
+### The Problem
+
+Obfuscators use `Thread.getStackTrace()` to derive XOR keys from caller identity. SSVM interprets bytecode on a single host thread — `Thread.getStackTrace()` returns SSVM interpreter frames, not the expected `<clinit> -> decrypt -> keyDerive` chain. This produces wrong keys.
+
+### The Solution
+
+All three tools accept an optional `stackTraceOverride` parameter. When provided, `VMInterface.setInvoker()` intercepts `Thread.getStackTrace()` and returns a synthetic `StackTraceElement[]` matching the user-specified frames:
+
+```java
+vmi.setInvoker(threadClass, "getStackTrace", "()[Ljava/lang/StackTraceElement;", ctx -> {
+    ArrayValue syntheticTrace = buildStackTraceArray(vm, overrideFrames);
+    ctx.setResult(syntheticTrace);
+    return Result.ABORT;
+});
+```
+
+### Parameter Format
+
+```json
+"stackTraceOverride": [
+  {"className": "java.lang.Thread", "methodName": "getStackTrace"},
+  {"className": "bigdick55_10", "methodName": "0"},
+  {"className": "bigdick55_10", "methodName": "2"},
+  {"className": "com.target.IIIiiiiiII", "methodName": "<clinit>"}
+]
+```
+
+Each entry becomes a `StackTraceElement(className, methodName, fileName, lineNumber)`. `fileName` and `lineNumber` default to `null`/`-1` if omitted.
+
+## Cross-Cutting: Initialization Control
+
+### The Problem
+
+When `vm-run-clinit` triggers class A's `<clinit>`, SSVM normally auto-initializes all referenced classes (B, C, D...). For obfuscation RE, this pollutes shared caches (like `ConcurrentHashMap` lookup tables) with wrong-order entries. The agent needs to control which classes can initialize and which should be loaded-but-not-initialized.
+
+### The Solution
+
+`vm-run-clinit` accepts an `allowTransitiveInit` whitelist. Only classes on the whitelist can have their `<clinit>` triggered during execution. All other classes are loadable (their bytecode is available) but initialization is deferred until explicitly requested.
+
+Implementation: Hook SSVM's class initialization path to check the whitelist before running `<clinit>`.
+
+### Initialization Tracking
+
+All three tools return a `classesInitialized` field listing which classes had their `<clinit>` run during that tool call. This enables the agent to track initialization state across calls.
 
 ## Tools (v1)
 
@@ -61,6 +112,7 @@ Invoke a static method on a workspace class inside the sandboxed SSVM.
 | `methodName` | string | yes | Method name to invoke |
 | `methodDescriptor` | string | yes | JVM method descriptor, e.g. `(II)I` |
 | `args` | array | no | JSON array of arguments |
+| `stackTraceOverride` | array | no | Synthetic stack trace frames (see above) |
 | `maxIterations` | int | no | Max bytecode instructions (default 1,000,000) |
 
 **Argument mapping** (JSON -> JVM, inferred from descriptor):
@@ -76,7 +128,8 @@ Invoke a static method on a workspace class inside the sandboxed SSVM.
   "returnType": "int",
   "stdout": "captured stdout text",
   "stderr": "captured stderr text",
-  "iterationsUsed": 42350
+  "iterationsUsed": 42350,
+  "classesInitialized": ["bigdick55_10", "mapped.Class1"]
 }
 ```
 
@@ -98,11 +151,11 @@ Invoke a static method on a workspace class inside the sandboxed SSVM.
 }
 ```
 
-**Scope (v1):** Static methods only. Instance methods require object construction which adds complexity — defer to v2.
+**Scope (v1):** Static methods only. Instance methods require object construction — defer to v2.
 
 ### `vm-get-field`
 
-Read a static field value after class initialization (`<clinit>` runs automatically).
+Read a static field value. Class initialization (`<clinit>`) runs automatically if not already initialized.
 
 **Parameters:**
 | Name | Type | Required | Description |
@@ -110,6 +163,7 @@ Read a static field value after class initialization (`<clinit>` runs automatica
 | `className` | string | yes | Fully qualified class name |
 | `fieldName` | string | yes | Field name to read |
 | `fieldDescriptor` | string | no | JVM field descriptor for disambiguation |
+| `stackTraceOverride` | array | no | Synthetic stack trace for clinit-triggered code |
 
 **Return format:**
 ```json
@@ -120,11 +174,69 @@ Read a static field value after class initialization (`<clinit>` runs automatica
   "value": 42,
   "classInitialized": true,
   "stdout": "any clinit output",
-  "stderr": ""
+  "stderr": "",
+  "classesInitialized": ["com.example.Config"]
 }
 ```
 
 **Scope (v1):** Static fields only.
+
+### `vm-run-clinit`
+
+Explicitly trigger class initialization with controlled ordering. This is the primary tool for string decryption workflows where `<clinit>` populates static fields.
+
+**Parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `className` | string | yes | Class to initialize |
+| `stackTraceOverride` | array | no | Synthetic stack trace for stack-introspection-dependent code |
+| `allowTransitiveInit` | array | no | Whitelist of class names whose `<clinit>` may fire transitively. If omitted, all transitive initialization is allowed (standard JVM behavior). If provided, only listed classes + the target class can initialize. |
+| `maxIterations` | int | no | Max bytecode instructions (default 1,000,000) |
+
+**Return format:**
+```json
+{
+  "className": "com.target.IIIiiiiiII",
+  "initialized": true,
+  "stdout": "any clinit output",
+  "stderr": "",
+  "classesInitialized": ["bigdick55_10", "mapped.Class1", "com.target.IIIiiiiiII"],
+  "classesDeferred": ["com.other.Unrelated"]
+}
+```
+
+`classesDeferred` lists classes whose initialization was blocked by the whitelist. This helps the agent discover dependencies they may need to add to the whitelist.
+
+**Example workflow** (from real RLPL sideload analysis):
+```
+1. vm-run-clinit(className="bigdick55_10")
+   → initializes decryption infrastructure
+
+2. vm-get-field(className="bigdick55_10", fieldName="random_array")
+   → reads the ACTUAL runtime random array (differs from bytecode)
+
+3. vm-run-clinit(
+     className="com.target.IIIiiiiiII",
+     stackTraceOverride=[
+       {className: "java.lang.Thread", methodName: "getStackTrace"},
+       {className: "bigdick55_10", methodName: "0"},
+       {className: "bigdick55_10", methodName: "2"},
+       {className: "com.target.IIIiiiiiII", methodName: "<clinit>"}
+     ],
+     allowTransitiveInit=["bigdick55_10", "bigdick55_11", "mapped.Class1"]
+   )
+   → initializes target class with correct stack trace context
+
+4. vm-get-field(className="com.target.IIIiiiiiII", fieldName="a")
+   → reads correctly-populated cipher array
+
+5. vm-invoke-method(
+     className="com.target.IIIiiiiiII",
+     methodName="a", methodDescriptor="(II)Ljava/lang/String;",
+     args=[26880, 0]
+   )
+   → decrypts URL directly
+```
 
 ## VM Lifecycle
 
@@ -167,6 +279,8 @@ SSVM's `jlinker` dependency has no conflicts and doesn't need relocation.
 | Process execution | Override `Runtime.exec` via `VMInterface.setInvoker()` to block |
 | Infinite loops | `maxIterations` parameter (default 1M instructions per call) |
 | Memory | SSVM uses host heap; large allocations bounded by Recaf's JVM heap limit |
+| Stack introspection | `stackTraceOverride` ensures correct frames for key derivation |
+| Transitive init | `allowTransitiveInit` whitelist prevents uncontrolled class initialization |
 
 ## Known Limitations
 
@@ -182,26 +296,30 @@ SSVM's `jlinker` dependency has no conflicts and doesn't need relocation.
 ```
 recaf-mcp-plugin/src/main/java/dev/recafmcp/
   providers/
-    SsvmExecutionProvider.java    (~250 LOC - tool registration, arg mapping, result serialization)
+    SsvmExecutionProvider.java    (~350 LOC - tool registration, arg mapping, result serialization)
   ssvm/
-    SsvmManager.java              (~150 LOC - VM lifecycle, workspace listener, lazy init)
+    SsvmManager.java              (~200 LOC - VM lifecycle, workspace listener, lazy init)
+    StackTraceInterceptor.java    (~80 LOC - synthetic stack trace injection)
+    InitializationController.java (~100 LOC - whitelist-based clinit gating)
 ```
 
 ## Estimated Scope
 
 | Component | LOC | Effort |
 |-----------|-----|--------|
-| `SsvmManager` | ~150 | VM lifecycle, workspace listener, class loading bridge |
-| `SsvmExecutionProvider` | ~250 | Tool registration, argument mapping, result serialization |
+| `SsvmManager` | ~200 | VM lifecycle, workspace listener, class loading bridge |
+| `SsvmExecutionProvider` | ~350 | 3 tools, argument mapping, result serialization |
+| `StackTraceInterceptor` | ~80 | Thread.getStackTrace() override via VMInterface |
+| `InitializationController` | ~100 | Whitelist-based clinit gating + tracking |
 | Gradle build integration | ~50 | Submodule, composite build, shading rules |
-| Unit tests | ~300 | Mock workspace + real SSVM invocations |
-| **Total** | **~750** | **3-5 days** |
+| Unit tests | ~400 | All tools, stack trace override, init control, workspace reset |
+| **Total** | **~1180** | **5-7 days** |
 
 ## Future Expansion (v2+)
 
 - `vm-invoke-constructor` + `vm-invoke-instance-method` — object lifecycle
 - `vm-eval-expression` — compile + execute Java snippets in VM context
-- `vm-run-clinit` — explicitly trigger class initialization with detailed output
 - `vm-set-field` — modify field values before method invocation (test different inputs)
-- Array/collection inspection with pagination
+- `vm-get-initialization-state` — query which classes are currently initialized in the VM
+- Array/collection deep inspection with pagination
 - Custom native method mocking via tool parameters

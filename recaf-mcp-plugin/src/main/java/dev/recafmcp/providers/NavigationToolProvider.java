@@ -41,8 +41,10 @@ public class NavigationToolProvider extends AbstractToolProvider {
 		registerClassGetHierarchy();
 		registerMethodList();
 		registerFieldList();
+		registerFieldGetValue();
 		registerPackageList();
 		registerClassSearchByName();
+		registerFieldGetAllConstants();
 	}
 
 	/**
@@ -137,7 +139,7 @@ public class NavigationToolProvider extends AbstractToolProvider {
 	private void registerClassGetInfo() {
 		Tool tool = buildTool(
 				"class-get-info",
-				"Get detailed information about a specific class including name, access flags, super class, interfaces, fields, and methods.",
+				"Get detailed information about a specific class including name, access flags, super class, interfaces, fields, and methods. Fields with compile-time constants (ConstantValue attribute) include defaultValue and defaultValueType.",
 				createSchema(Map.of(
 						"className", stringParam("Fully qualified class name (dot or slash notation)")
 				), List.of("className"))
@@ -169,6 +171,11 @@ public class NavigationToolProvider extends AbstractToolProvider {
 						f.put("name", field.getName());
 						f.put("descriptor", field.getDescriptor());
 						f.put("access", field.getAccess());
+						Object defaultValue = field.getDefaultValue();
+						if (defaultValue != null) {
+							f.put("defaultValue", defaultValue);
+							f.put("defaultValueType", getValueTypeName(defaultValue));
+						}
 						return f;
 					})
 					.collect(Collectors.toList());
@@ -283,7 +290,7 @@ public class NavigationToolProvider extends AbstractToolProvider {
 	private void registerFieldList() {
 		Tool tool = buildTool(
 				"field-list",
-				"List fields of a class with name, descriptor, and access flags. Supports pagination.",
+				"List fields of a class with name, descriptor, and access flags. Fields with compile-time constants (ConstantValue attribute) include defaultValue and defaultValueType. Supports pagination.",
 				createSchema(Map.of(
 						"className", stringParam("Fully qualified class name (dot or slash notation)"),
 						"offset", intParam("Pagination offset (default 0)"),
@@ -310,12 +317,92 @@ public class NavigationToolProvider extends AbstractToolProvider {
 						f.put("name", field.getName());
 						f.put("descriptor", field.getDescriptor());
 						f.put("access", field.getAccess());
+						Object defaultValue = field.getDefaultValue();
+						if (defaultValue != null) {
+							f.put("defaultValue", defaultValue);
+							f.put("defaultValueType", getValueTypeName(defaultValue));
+						}
 						return f;
 					})
 					.collect(Collectors.toList());
 
 			List<Map<String, Object>> page = PaginationUtil.paginate(fieldMaps, offset, limit);
 			Map<String, Object> result = PaginationUtil.paginatedResult(page, offset, limit, fieldMaps.size());
+			return createJsonResult(result);
+		});
+	}
+
+	// ---- field-get-value ----
+
+	private void registerFieldGetValue() {
+		Tool tool = buildTool(
+				"field-get-value",
+				"Get the compile-time constant value (ConstantValue attribute) of a specific field. " +
+						"Returns the field's value, type, access flags, and static/final modifiers. " +
+						"Useful for extracting configuration constants, version strings, magic numbers, and enum-like values.",
+				createSchema(Map.of(
+						"className", stringParam("Fully qualified class name (dot or slash notation)"),
+						"fieldName", stringParam("Name of the field"),
+						"fieldDescriptor", stringParam("Field descriptor for disambiguation (e.g. 'I', 'Ljava/lang/String;'). Optional if field name is unambiguous.")
+				), List.of("className", "fieldName"))
+		);
+
+		registerTool(tool, (exchange, args) -> {
+			Workspace workspace = requireWorkspace();
+			String className = getString(args, "className");
+			String fieldName = getString(args, "fieldName");
+			String fieldDescriptor = getOptionalString(args, "fieldDescriptor", null);
+
+			String normalized = ClassResolver.normalizeClassName(className);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			if (node == null) {
+				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+			}
+
+			ClassInfo classInfo = node.getValue();
+			FieldMember field;
+			if (fieldDescriptor != null) {
+				field = classInfo.getDeclaredField(fieldName, fieldDescriptor);
+			} else {
+				field = classInfo.getFirstDeclaredFieldByName(fieldName);
+			}
+
+			if (field == null) {
+				String msg = "Field '" + fieldName + "' not found in class '" + normalized + "'";
+				if (fieldDescriptor != null) {
+					msg += " with descriptor '" + fieldDescriptor + "'";
+				}
+				return createErrorResult(msg);
+			}
+
+			boolean isStatic = field.hasStaticModifier();
+			boolean isFinal = field.hasFinalModifier();
+			Object value = field.getDefaultValue();
+
+			Map<String, Object> result = new LinkedHashMap<>();
+			result.put("className", normalized);
+			result.put("fieldName", field.getName());
+			result.put("fieldDescriptor", field.getDescriptor());
+			result.put("access", field.getAccess());
+			result.put("isStatic", isStatic);
+			result.put("isFinal", isFinal);
+			result.put("hasConstantValue", value != null);
+			result.put("value", value);
+			if (value != null) {
+				result.put("valueType", getValueTypeName(value));
+			} else {
+				if (!isStatic) {
+					result.put("note", "Instance fields do not have compile-time constant values. " +
+							"The value is assigned at construction time.");
+				} else if (!isFinal) {
+					result.put("note", "Non-final static fields do not have compile-time constant values. " +
+							"The value may be initialized in <clinit> (static initializer).");
+				} else {
+					result.put("note", "This static final field does not have a ConstantValue attribute. " +
+							"Its value is likely computed in <clinit> (static initializer) rather than being a compile-time constant.");
+				}
+			}
+
 			return createJsonResult(result);
 		});
 	}
@@ -353,6 +440,23 @@ public class NavigationToolProvider extends AbstractToolProvider {
 			result.put("count", packageList.size());
 			return createJsonResult(result);
 		});
+	}
+
+	// ---- helper: value type name ----
+
+	/**
+	 * Return a human-readable type name for a JVM ConstantValue attribute value.
+	 *
+	 * @param value The value returned by {@link FieldMember#getDefaultValue()}.
+	 * @return A short type name such as "int", "long", "float", "double", or "String".
+	 */
+	static String getValueTypeName(Object value) {
+		if (value instanceof Integer) return "int";
+		if (value instanceof Long) return "long";
+		if (value instanceof Float) return "float";
+		if (value instanceof Double) return "double";
+		if (value instanceof String) return "String";
+		return value.getClass().getSimpleName();
 	}
 
 	// ---- class-search-by-name ----
@@ -396,6 +500,54 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 			List<Map<String, Object>> page = PaginationUtil.paginate(matches, offset, limit);
 			Map<String, Object> result = PaginationUtil.paginatedResult(page, offset, limit, matches.size());
+			return createJsonResult(result);
+		});
+	}
+
+	// ---- field-get-all-constants ----
+
+	private void registerFieldGetAllConstants() {
+		Tool tool = buildTool(
+				"field-get-all-constants",
+				"Get all fields with compile-time constant values (ConstantValue attribute) from a class. Returns only fields that have a non-null default value. Useful for extracting configuration values, keys, magic numbers, etc.",
+				createSchema(Map.of(
+						"className", stringParam("Fully qualified class name (dot or slash notation)"),
+						"includeNonStatic", boolParam("Include non-static fields with default values (default false)")
+				), List.of("className"))
+		);
+
+		registerTool(tool, (exchange, args) -> {
+			Workspace workspace = requireWorkspace();
+			String className = getString(args, "className");
+			boolean includeNonStatic = getBoolean(args, "includeNonStatic", false);
+
+			String normalized = ClassResolver.normalizeClassName(className);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			if (node == null) {
+				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+			}
+
+			ClassInfo classInfo = node.getValue();
+
+			List<Map<String, Object>> constants = classInfo.getFields().stream()
+					.filter(f -> f.getDefaultValue() != null)
+					.filter(f -> includeNonStatic || f.hasStaticModifier())
+					.map(field -> {
+						Map<String, Object> entry = new LinkedHashMap<>();
+						entry.put("name", field.getName());
+						entry.put("descriptor", field.getDescriptor());
+						entry.put("access", field.getAccess());
+						entry.put("value", field.getDefaultValue());
+						entry.put("valueType", getValueTypeName(field.getDefaultValue()));
+						return entry;
+					})
+					.collect(Collectors.toList());
+
+			Map<String, Object> result = new LinkedHashMap<>();
+			result.put("className", normalized);
+			result.put("constantCount", constants.size());
+			result.put("totalFieldCount", classInfo.getFields().size());
+			result.put("constants", constants);
 			return createJsonResult(result);
 		});
 	}

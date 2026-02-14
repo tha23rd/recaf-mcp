@@ -46,6 +46,7 @@ configurations {
     // Dependencies provided by Recaf at runtime (don't shade these)
     recafProvided
     compileOnly.extendsFrom(recafProvided)
+    testImplementation.extendsFrom(recafProvided)
 
     // Dependencies we need to shade into the plugin JAR
     shade

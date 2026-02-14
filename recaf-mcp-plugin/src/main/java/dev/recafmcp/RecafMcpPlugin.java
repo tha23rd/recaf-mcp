@@ -3,7 +3,10 @@ package dev.recafmcp;
 import dev.recafmcp.providers.*;
 import dev.recafmcp.resources.ClassResourceProvider;
 import dev.recafmcp.resources.WorkspaceResourceProvider;
+import dev.recafmcp.server.JsonResponseSerializer;
 import dev.recafmcp.server.McpServerManager;
+import dev.recafmcp.server.ResponseSerializer;
+import dev.recafmcp.server.ToonResponseSerializer;
 import io.modelcontextprotocol.server.McpSyncServer;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -96,20 +99,62 @@ public class RecafMcpPlugin implements Plugin {
 			serverManager = new McpServerManager();
 			McpSyncServer mcp = serverManager.start();
 
+			// Resolve response format: -Drecaf.mcp.format=toon to enable TOON serialization
+			ResponseSerializer serializer = resolveResponseSerializer();
+			logger.info("Using response format: {}", serializer.formatName());
+
 			// Register all tool providers
-			new WorkspaceToolProvider(mcp, workspaceManager, resourceImporter, mappingManager).registerTools();
-			new NavigationToolProvider(mcp, workspaceManager).registerTools();
-			new DecompilerToolProvider(mcp, workspaceManager, decompilerManager).registerTools();
-			new SearchToolProvider(mcp, workspaceManager, searchService, decompilerManager).registerTools();
-			new XRefToolProvider(mcp, workspaceManager, searchService).registerTools();
-			new CallGraphToolProvider(mcp, workspaceManager, callGraphService).registerTools();
-			new InheritanceToolProvider(mcp, workspaceManager, inheritanceGraphService).registerTools();
-			new MappingToolProvider(mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager).registerTools();
-			new CommentToolProvider(mcp, workspaceManager, commentManager).registerTools();
-			new CompilerToolProvider(mcp, workspaceManager, javacCompiler, phantomGenerator).registerTools();
-			new AssemblerToolProvider(mcp, workspaceManager, assemblerPipelineManager).registerTools();
-			new TransformToolProvider(mcp, workspaceManager, transformationManager, transformationApplierService).registerTools();
-			new AttachToolProvider(mcp, workspaceManager).registerTools();
+			WorkspaceToolProvider workspace = new WorkspaceToolProvider(mcp, workspaceManager, resourceImporter, mappingManager);
+			workspace.setResponseSerializer(serializer);
+			workspace.registerTools();
+
+			NavigationToolProvider nav = new NavigationToolProvider(mcp, workspaceManager);
+			nav.setResponseSerializer(serializer);
+			nav.registerTools();
+
+			DecompilerToolProvider decompiler = new DecompilerToolProvider(mcp, workspaceManager, decompilerManager);
+			decompiler.setResponseSerializer(serializer);
+			decompiler.registerTools();
+
+			SearchToolProvider search = new SearchToolProvider(mcp, workspaceManager, searchService, decompilerManager);
+			search.setResponseSerializer(serializer);
+			search.registerTools();
+
+			XRefToolProvider xref = new XRefToolProvider(mcp, workspaceManager, searchService);
+			xref.setResponseSerializer(serializer);
+			xref.registerTools();
+
+			CallGraphToolProvider callGraph = new CallGraphToolProvider(mcp, workspaceManager, callGraphService);
+			callGraph.setResponseSerializer(serializer);
+			callGraph.registerTools();
+
+			InheritanceToolProvider inheritance = new InheritanceToolProvider(mcp, workspaceManager, inheritanceGraphService);
+			inheritance.setResponseSerializer(serializer);
+			inheritance.registerTools();
+
+			MappingToolProvider mapping = new MappingToolProvider(mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager);
+			mapping.setResponseSerializer(serializer);
+			mapping.registerTools();
+
+			CommentToolProvider comment = new CommentToolProvider(mcp, workspaceManager, commentManager);
+			comment.setResponseSerializer(serializer);
+			comment.registerTools();
+
+			CompilerToolProvider compiler = new CompilerToolProvider(mcp, workspaceManager, javacCompiler, phantomGenerator);
+			compiler.setResponseSerializer(serializer);
+			compiler.registerTools();
+
+			AssemblerToolProvider assembler = new AssemblerToolProvider(mcp, workspaceManager, assemblerPipelineManager);
+			assembler.setResponseSerializer(serializer);
+			assembler.registerTools();
+
+			TransformToolProvider transform = new TransformToolProvider(mcp, workspaceManager, transformationManager, transformationApplierService);
+			transform.setResponseSerializer(serializer);
+			transform.registerTools();
+
+			AttachToolProvider attach = new AttachToolProvider(mcp, workspaceManager);
+			attach.setResponseSerializer(serializer);
+			attach.registerTools();
 
 			// Register MCP resources
 			new WorkspaceResourceProvider(mcp, workspaceManager).register();
@@ -131,5 +176,19 @@ public class RecafMcpPlugin implements Plugin {
 			serverManager = null;
 		}
 		logger.info("Recaf MCP Server plugin disabled");
+	}
+
+	/**
+	 * Resolves the response serializer from the {@code recaf.mcp.format} system property.
+	 * Supported values: "json" (default), "toon".
+	 *
+	 * @return The configured {@link ResponseSerializer}.
+	 */
+	private static ResponseSerializer resolveResponseSerializer() {
+		String format = System.getProperty("recaf.mcp.format", "toon");
+		if ("json".equalsIgnoreCase(format)) {
+			return new JsonResponseSerializer();
+		}
+		return new ToonResponseSerializer();
 	}
 }

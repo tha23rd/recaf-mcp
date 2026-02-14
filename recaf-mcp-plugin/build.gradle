@@ -62,7 +62,7 @@ configurations {
 // SSVM requires Gradle 7.3 + Java 11 (Lombok 1.18.24 is incompatible with Java 25),
 // so we invoke it as an external process rather than using composite builds.
 tasks.register('buildSsvm', Exec) {
-    def java11Home = '/usr/lib/jvm/java-11-openjdk-amd64'
+    def java11Home = System.getenv('JAVA_11_HOME') ?: '/usr/lib/jvm/java-11-openjdk-amd64'
     workingDir ssvmDir
     environment 'JAVA_HOME', java11Home
     commandLine "${ssvmDir}/gradlew", 'jar', '--no-daemon'

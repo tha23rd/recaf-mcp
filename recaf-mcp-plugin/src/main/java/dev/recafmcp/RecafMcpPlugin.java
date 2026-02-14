@@ -97,7 +97,7 @@ public class RecafMcpPlugin implements Plugin {
 			Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
 
 			serverManager = new McpServerManager();
-			McpSyncServer mcp = serverManager.start();
+			McpSyncServer mcp = serverManager.start(McpServerManager.resolveHost(), McpServerManager.resolvePort());
 
 			// Resolve response format: -Drecaf.mcp.format=toon to enable TOON serialization
 			ResponseSerializer serializer = resolveResponseSerializer();

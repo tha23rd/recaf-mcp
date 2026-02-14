@@ -1,0 +1,3 @@
+[submodule "ssvm"]
+	path = ssvm
+	url = https://github.com/xxDark/SSVM.git

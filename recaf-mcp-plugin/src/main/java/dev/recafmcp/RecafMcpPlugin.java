@@ -7,6 +7,7 @@ import dev.recafmcp.server.JsonResponseSerializer;
 import dev.recafmcp.server.McpServerManager;
 import dev.recafmcp.server.ResponseSerializer;
 import dev.recafmcp.server.ToonResponseSerializer;
+import dev.recafmcp.ssvm.SsvmManager;
 import io.modelcontextprotocol.server.McpSyncServer;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -156,12 +157,17 @@ public class RecafMcpPlugin implements Plugin {
 			attach.setResponseSerializer(serializer);
 			attach.registerTools();
 
+			SsvmManager ssvmManager = new SsvmManager(workspaceManager);
+			SsvmExecutionProvider ssvmExecution = new SsvmExecutionProvider(mcp, workspaceManager, ssvmManager);
+			ssvmExecution.setResponseSerializer(serializer);
+			ssvmExecution.registerTools();
+
 			// Register MCP resources
 			new WorkspaceResourceProvider(mcp, workspaceManager).register();
 			new ClassResourceProvider(mcp, workspaceManager, decompilerManager).register();
 
 			logger.info("Recaf MCP Server plugin enabled — {} tool providers, {} resource providers",
-					13, 2);
+					14, 2);
 		} catch (Exception e) {
 			logger.error("Failed to start MCP server", e);
 		} finally {

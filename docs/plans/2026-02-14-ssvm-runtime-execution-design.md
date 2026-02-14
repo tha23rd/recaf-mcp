@@ -83,6 +83,8 @@ vmi.setInvoker(threadClass, "getStackTrace", "()[Ljava/lang/StackTraceElement;",
 
 Each entry becomes a `StackTraceElement(className, methodName, fileName, lineNumber)`. `fileName` and `lineNumber` default to `null`/`-1` if omitted.
 
+**Frame indexing matters.** Obfuscators read specific frame indices (e.g. `getStackTrace()[3]`). The override array must be positioned so the correct class appears at the expected index. The override is not just "what classes are on the stack" but "what class is at position N." When in doubt, include `Thread.getStackTrace` at index 0 and the calling chain in order.
+
 ## Cross-Cutting: Initialization Control
 
 ### The Problem
@@ -113,7 +115,7 @@ Invoke a static method on a workspace class inside the sandboxed SSVM.
 | `methodDescriptor` | string | yes | JVM method descriptor, e.g. `(II)I` |
 | `args` | array | no | JSON array of arguments |
 | `stackTraceOverride` | array | no | Synthetic stack trace frames (see above) |
-| `maxIterations` | int | no | Max bytecode instructions (default 1,000,000) |
+| `maxIterations` | int | no | Max bytecode instructions (default 10,000,000) |
 
 **Argument mapping** (JSON -> JVM, inferred from descriptor):
 - JSON number -> `int`, `long`, `float`, `double` (based on descriptor char)
@@ -147,6 +149,18 @@ Invoke a static method on a workspace class inside the sandboxed SSVM.
   "message": "Cannot invoke method on null",
   "vmStackTrace": "at com.example.Foo.bar(Foo.java:42)\n...",
   "stdout": "any output before crash",
+  "stderr": ""
+}
+```
+
+**Iteration limit exceeded** (distinct from exceptions — agent should retry with higher limit):
+```json
+{
+  "error": "IterationLimitExceeded",
+  "message": "Execution exceeded 10000000 iterations. Retry with a higher maxIterations value.",
+  "iterationsUsed": 10000000,
+  "maxIterations": 10000000,
+  "stdout": "any partial output",
   "stderr": ""
 }
 ```
@@ -191,7 +205,7 @@ Explicitly trigger class initialization with controlled ordering. This is the pr
 | `className` | string | yes | Class to initialize |
 | `stackTraceOverride` | array | no | Synthetic stack trace for stack-introspection-dependent code |
 | `allowTransitiveInit` | array | no | Whitelist of class names whose `<clinit>` may fire transitively. If omitted, all transitive initialization is allowed (standard JVM behavior). If provided, only listed classes + the target class can initialize. |
-| `maxIterations` | int | no | Max bytecode instructions (default 1,000,000) |
+| `maxIterations` | int | no | Max bytecode instructions (default 10,000,000) |
 
 **Return format:**
 ```json
@@ -277,7 +291,7 @@ SSVM's `jlinker` dependency has no conflicts and doesn't need relocation.
 | File I/O | Custom `FileManager` with `ByteArrayOutputStream` for stdout/stderr; all other file ops return errors |
 | Network | Not implemented in SSVM (fails safely) |
 | Process execution | Override `Runtime.exec` via `VMInterface.setInvoker()` to block |
-| Infinite loops | `maxIterations` parameter (default 1M instructions per call) |
+| Infinite loops | `maxIterations` parameter (default 10M instructions per call) |
 | Memory | SSVM uses host heap; large allocations bounded by Recaf's JVM heap limit |
 | Stack introspection | `stackTraceOverride` ensures correct frames for key derivation |
 | Transitive init | `allowTransitiveInit` whitelist prevents uncontrolled class initialization |

@@ -2,7 +2,7 @@
 
 MCP (Model Context Protocol) server plugin for [Recaf](https://github.com/Col-E/Recaf), enabling AI agents to perform Java reverse engineering tasks.
 
-68 tools across 13 categories: decompilation, bytecode search, cross-references, call graphs, inheritance analysis, renaming/mapping, compilation, assembly, comments, and more.
+71 tools across 14 categories: decompilation, bytecode search, cross-references, call graphs, inheritance analysis, renaming/mapping, compilation, assembly, comments, sandboxed execution, and more.
 
 ## Quick Start
 
@@ -131,6 +131,7 @@ recaf-mcp-bridge [--host localhost] [--port 8085]
 | **Comment** | `comment-set`, `comment-get`, `comment-search`, `comment-delete` | Annotate classes and members |
 | **Assembler** | `disassemble-method`, `assemble-method`, `disassemble-class`, `assemble-class` | JASM assembly and disassembly |
 | **Transform** | `transform-list`, `transform-apply`, `transform-apply-batch`, `transform-preview`, `transform-undo` | Apply bytecode transformers |
+| **SSVM Execution** | `vm-invoke-method`, `vm-get-field`, `vm-run-clinit` | Sandboxed bytecode execution for string decryption, key derivation, and static analysis |
 | **Attach** | `attach-list-vms`, `attach-connect`, `attach-load-classes`, `attach-disconnect` | Attach to running JVMs *(TODO)* |
 
 ## Resources

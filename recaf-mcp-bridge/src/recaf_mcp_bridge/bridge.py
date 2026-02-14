@@ -20,9 +20,10 @@ from mcp.types import (
 class RecafMcpBridge:
     """MCP Server that bridges stdio to Recaf's Streamable HTTP endpoint."""
 
-    def __init__(self, port: int = 8085):
+    def __init__(self, host: str = "localhost", port: int = 8085):
         self.port = port
-        self.url = f"http://localhost:{port}/mcp"
+        self.host = host
+        self.url = f"http://{host}:{port}/mcp"
         self.server = Server("recaf-mcp-bridge")
         self.backend: ClientSession | None = None
         self._register_handlers()
@@ -86,10 +87,11 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Recaf MCP stdio bridge")
+    parser.add_argument("--host", type=str, default="localhost", help="Recaf MCP host")
     parser.add_argument("--port", type=int, default=8085, help="Recaf MCP port")
     args = parser.parse_args()
 
-    bridge = RecafMcpBridge(port=args.port)
+    bridge = RecafMcpBridge(host=args.host, port=args.port)
     asyncio.run(bridge.run())
 
 

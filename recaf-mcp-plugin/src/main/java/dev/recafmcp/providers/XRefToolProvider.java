@@ -11,6 +11,7 @@ import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
@@ -178,6 +179,23 @@ public class XRefToolProvider extends AbstractToolProvider {
 							ref.put("type", "field");
 							fieldRefs.add(ref);
 							typeRefs.add(fin.owner);
+						}
+						case InvokeDynamicInsnNode indy -> {
+							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
+							ref.put("fromMethod", methodContext);
+							ref.put("bootstrapOwner", indy.bsm.getOwner());
+							ref.put("bootstrapName", indy.bsm.getName());
+							ref.put("bootstrapDescriptor", indy.bsm.getDesc());
+							ref.put("callName", indy.name);
+							ref.put("callDescriptor", indy.desc);
+							ref.put("type", "invokedynamic");
+							if (indy.bsmArgs != null && indy.bsmArgs.length > 0) {
+								List<String> bsmArgStrs = new ArrayList<>();
+								for (Object arg : indy.bsmArgs) bsmArgStrs.add(arg.toString());
+								ref.put("bootstrapArgs", bsmArgStrs);
+							}
+							methodRefs.add(ref);
+							typeRefs.add(indy.bsm.getOwner());
 						}
 						case TypeInsnNode tin -> typeRefs.add(tin.desc);
 						default -> {

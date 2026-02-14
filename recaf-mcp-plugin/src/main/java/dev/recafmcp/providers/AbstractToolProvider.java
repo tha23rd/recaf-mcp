@@ -1,6 +1,7 @@
 package dev.recafmcp.providers;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.recafmcp.server.JsonResponseSerializer;
+import dev.recafmcp.server.ResponseSerializer;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.McpSyncServerExchange;
@@ -27,29 +28,10 @@ import java.util.function.BiFunction;
  */
 public abstract class AbstractToolProvider implements ToolProvider {
 	private static final Logger logger = Logging.get(AbstractToolProvider.class);
-	private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
 	protected final McpSyncServer server;
 	protected final WorkspaceManager workspaceManager;
 	protected ResponseSerializer responseSerializer;
-
-	/**
-	 * Serialization strategy for tool responses. Defaults to JSON.
-	 */
-	public interface ResponseSerializer {
-		/**
-		 * Serialize the given object to a string representation.
-		 *
-		 * @param data Object to serialize.
-		 * @return Serialized string.
-		 */
-		String serialize(Object data);
-
-		/**
-		 * @return Human-readable name for the format (e.g., "JSON", "TOON").
-		 */
-		String formatName();
-	}
 
 	protected AbstractToolProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
 		this.server = server;
@@ -200,6 +182,34 @@ public abstract class AbstractToolProvider implements ToolProvider {
 		return Boolean.parseBoolean(value.toString());
 	}
 
+	/**
+	 * Get a required string list parameter from the tool arguments.
+	 * The MCP protocol delivers JSON arrays as {@code List<String>}.
+	 *
+	 * @param args Argument map provided by the MCP client.
+	 * @param key  Parameter name.
+	 * @return The list of strings.
+	 * @throws IllegalArgumentException if the parameter is missing or not a list.
+	 */
+	@SuppressWarnings("unchecked")
+	protected static List<String> getStringList(Map<String, Object> args, String key) {
+		Object value = args.get(key);
+		if (value == null) {
+			throw new IllegalArgumentException("Missing required parameter: " + key);
+		}
+		if (value instanceof List<?> list) {
+			List<String> result = new java.util.ArrayList<>(list.size());
+			for (Object item : list) {
+				if (item == null) {
+					throw new IllegalArgumentException("Parameter '" + key + "' contains null elements");
+				}
+				result.add(item.toString());
+			}
+			return result;
+		}
+		throw new IllegalArgumentException("Parameter '" + key + "' must be an array of strings");
+	}
+
 	// ---- Workspace access ----
 
 	/**
@@ -306,24 +316,12 @@ public abstract class AbstractToolProvider implements ToolProvider {
 		logger.debug("Registered tool: {}", tool.name());
 	}
 
-	// ---- Default JSON serializer ----
-
 	/**
-	 * Default {@link ResponseSerializer} that produces JSON via Jackson.
+	 * Override the response serialization format used by this provider.
+	 *
+	 * @param serializer The serializer to use.
 	 */
-	private static class JsonResponseSerializer implements ResponseSerializer {
-		@Override
-		public String serialize(Object data) {
-			try {
-				return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(data);
-			} catch (Exception e) {
-				throw new RuntimeException("JSON serialization failed", e);
-			}
-		}
-
-		@Override
-		public String formatName() {
-			return "JSON";
-		}
+	public void setResponseSerializer(ResponseSerializer serializer) {
+		this.responseSerializer = serializer;
 	}
 }

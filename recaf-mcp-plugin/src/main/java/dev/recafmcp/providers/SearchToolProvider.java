@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
@@ -11,32 +12,32 @@ import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNode;
+import software.coley.recaf.path.ResourcePathNode;
+import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.match.NumberPredicate;
 import software.coley.recaf.services.search.match.StringPredicate;
 import software.coley.recaf.services.search.query.DeclarationQuery;
+import software.coley.recaf.services.search.query.InstructionQuery;
 import software.coley.recaf.services.search.query.NumberQuery;
 import software.coley.recaf.services.search.query.ReferenceQuery;
 import software.coley.recaf.services.search.query.StringQuery;
 import software.coley.recaf.services.search.result.Result;
 import software.coley.recaf.services.search.result.Results;
+import software.coley.recaf.info.member.ClassMember;
+import software.coley.recaf.path.ClassMemberPathNode;
+import software.coley.recaf.path.InstructionPathNode;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.IntInsnNode;
-import org.objectweb.asm.tree.LdcInsnNode;
-import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TypeInsnNode;
-import org.objectweb.asm.tree.VarInsnNode;
 import org.objectweb.asm.ClassReader;
-import software.coley.recaf.util.AsmInsnUtil;
+import software.coley.recaf.util.BlwUtil;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -44,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * MCP tool provider for search operations across the workspace.
@@ -74,6 +76,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 		registerSearchReferences();
 		registerSearchDeclarations();
 		registerSearchInstructions();
+		registerSearchInstructionSequence();
 		registerSearchFiles();
 		registerSearchTextInDecompilation();
 	}
@@ -275,23 +278,30 @@ public class SearchToolProvider extends AbstractToolProvider {
 	private void registerSearchInstructions() {
 		Tool tool = Tool.builder()
 				.name("search-instructions")
-				.description("Search for bytecode instructions matching a pattern across all classes. " +
-						"Matches against opcode names (e.g. 'INVOKEVIRTUAL', 'GETSTATIC', 'LDC') and " +
-						"operand text (class/method/field references, constants). " +
-						"The pattern is a case-insensitive regex matched against a text representation " +
-						"of each instruction.")
+				.description("Search for bytecode instructions matching a pattern across classes. " +
+						"Matches against JASM-formatted instruction text (lowercase opcodes like " +
+						"'invokevirtual', 'getstatic', 'ldc', 'invokedynamic') with full operand details " +
+						"including class/method/field references, constants, and bootstrap method info. " +
+						"The pattern is a case-insensitive regex matched against the JASM text representation " +
+						"of each instruction. Use 'classFilter' to narrow scope to specific packages.")
 				.inputSchema(createSchema(
-						Map.of(
-								"pattern", stringParam("Regex pattern to match against instruction text " +
-										"(e.g. 'INVOKEVIRTUAL.*println', 'GETSTATIC.*System/out', 'LDC.*password')"),
-								"maxClasses", intParam("Maximum number of classes to search (default: 200)"),
-								"maxResultsPerClass", intParam("Maximum matching instructions per class (default: 20)")
+						Map.ofEntries(
+								Map.entry("pattern", stringParam("Regex pattern to match against JASM instruction text " +
+										"(e.g. 'invokevirtual.*println', 'getstatic.*System', 'ldc.*password', 'invokedynamic.*makeConcatWithConstants')")),
+								Map.entry("classFilter", stringParam("Package prefix to filter classes (e.g. 'com.example' or 'com/example'). " +
+										"Only classes whose name starts with this prefix will be searched.")),
+								Map.entry("primaryOnly", boolParam("If true (default), only search classes in the primary resource " +
+										"(application classes), skipping library/supporting classes.")),
+								Map.entry("maxClasses", intParam("Maximum number of classes to search (default: 200)")),
+								Map.entry("maxResultsPerClass", intParam("Maximum matching instructions per class (default: 20)"))
 						),
 						List.of("pattern")
 				))
 				.build();
 		registerTool(tool, (exchange, args) -> {
 			String patternStr = getString(args, "pattern");
+			String classFilter = getOptionalString(args, "classFilter", null);
+			boolean primaryOnly = getBoolean(args, "primaryOnly", true);
 			int maxClasses = getInt(args, "maxClasses", 200);
 			int maxResultsPerClass = getInt(args, "maxResultsPerClass", 20);
 			maxClasses = Math.clamp(maxClasses, 1, 1000);
@@ -304,7 +314,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 			int totalSearched = 0;
 			int totalMatches = 0;
 
-			List<ClassPathNode> classNodes = workspace.jvmClassesStream()
+			// Build filtered class stream: apply classFilter and primaryOnly before limiting
+			List<ClassPathNode> classNodes = getFilteredClassStream(workspace, classFilter, primaryOnly)
 					.limit(maxClasses)
 					.toList();
 
@@ -333,7 +344,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 							AbstractInsnNode insn = instructions.get(i);
 							if (insn.getOpcode() < 0) continue; // Skip labels, frames, line numbers
 
-							String insnText = formatInstruction(insn);
+							String insnText = BlwUtil.toString(insn);
 							if (compiledPattern.matcher(insnText).find()) {
 								if (matchesInMethod < maxResultsPerClass) {
 									LinkedHashMap<String, Object> match = new LinkedHashMap<>();
@@ -373,39 +384,146 @@ public class SearchToolProvider extends AbstractToolProvider {
 			result.put("classesWithMatches", classMatches.size());
 			result.put("totalInstructionMatches", totalMatches);
 			result.put("results", classMatches);
+			if (classFilter != null) {
+				result.put("classFilter", classFilter);
+			}
+			result.put("primaryOnly", primaryOnly);
 			if (totalSearched >= maxClasses) {
 				result.put("warning", "Search was limited to " + maxClasses +
-						" classes. Increase 'maxClasses' to search more.");
+						" classes. Increase 'maxClasses' or use 'classFilter' to narrow scope.");
 			}
 			return createJsonResult(result);
 		});
 	}
 
-	/**
-	 * Format a bytecode instruction as a human-readable string for pattern matching.
-	 *
-	 * @param insn The ASM instruction node.
-	 * @return A string representation including opcode name and operands.
-	 */
-	private static String formatInstruction(AbstractInsnNode insn) {
-		String opcodeName = AsmInsnUtil.getInsnName(insn.getOpcode());
-		if (opcodeName == null) opcodeName = "UNKNOWN(" + insn.getOpcode() + ")";
+	// ---- search-instruction-sequence ----
 
-		return switch (insn) {
-			case MethodInsnNode min ->
-					opcodeName + " " + min.owner + "." + min.name + min.desc;
-			case FieldInsnNode fin ->
-					opcodeName + " " + fin.owner + "." + fin.name + " " + fin.desc;
-			case TypeInsnNode tin ->
-					opcodeName + " " + tin.desc;
-			case LdcInsnNode ldc ->
-					opcodeName + " " + ldc.cst;
-			case IntInsnNode iin ->
-					opcodeName + " " + iin.operand;
-			case VarInsnNode vin ->
-					opcodeName + " " + vin.var;
-			default -> opcodeName;
-		};
+	private void registerSearchInstructionSequence() {
+		Tool tool = Tool.builder()
+				.name("search-instruction-sequence")
+				.description("Search for consecutive bytecode instruction sequences matching a list of regex patterns. " +
+						"Each pattern is matched against the JASM-formatted text of consecutive instructions. " +
+						"Uses Recaf's InstructionQuery engine for efficient multi-instruction matching. " +
+						"Example: patterns=['invokestatic java/lang/System\\\\.currentTimeMillis', '.*', 'lcmp'] " +
+						"would find sequences of currentTimeMillis() followed by any instruction followed by lcmp.")
+				.inputSchema(createSchema(
+						Map.ofEntries(
+								Map.entry("patterns", arrayParam("List of regex patterns, one per consecutive instruction. " +
+										"Each pattern is case-insensitive and matched (partial) against JASM-formatted instruction text " +
+										"produced by BlwUtil.toString(). The patterns must match in consecutive order.", "string")),
+								Map.entry("classFilter", stringParam("Package prefix to filter classes (e.g. 'com.example' or 'com/example'). " +
+										"Only classes whose name starts with this prefix will be searched.")),
+								Map.entry("primaryOnly", boolParam("If true (default), only search classes in the primary resource " +
+										"(application classes), skipping library/supporting classes.")),
+								Map.entry("maxResults", intParam("Maximum total results to return (default: 100)"))
+						),
+						List.of("patterns")
+				))
+				.build();
+		registerTool(tool, (exchange, args) -> {
+			List<String> patterns = getStringList(args, "patterns");
+			String classFilter = getOptionalString(args, "classFilter", null);
+			boolean primaryOnly = getBoolean(args, "primaryOnly", true);
+			int maxResults = getInt(args, "maxResults", 100);
+			maxResults = Math.clamp(maxResults, 1, 1000);
+
+			if (patterns.isEmpty()) {
+				throw new IllegalArgumentException("'patterns' must contain at least one pattern");
+			}
+
+			Workspace workspace = requireWorkspace();
+
+			// Build StringPredicates from the pattern strings
+			List<StringPredicate> predicates = new ArrayList<>();
+			for (String patternStr : patterns) {
+				Pattern compiled = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
+				predicates.add(new StringPredicate("regex-partial",
+						s -> s != null && compiled.matcher(s).find()));
+			}
+
+			// Execute search using Recaf's InstructionQuery
+			InstructionQuery query = new InstructionQuery(predicates);
+			Results results = searchService.search(workspace, query);
+
+			// Collect and filter results
+			WorkspaceResource primary = workspace.getPrimaryResource();
+			String normalizedFilter = (classFilter != null && !classFilter.isEmpty())
+					? ClassResolver.normalizeClassName(classFilter) : null;
+
+			List<Map<String, Object>> matchList = new ArrayList<>();
+			int skippedByFilter = 0;
+
+			for (Result<?> result : results) {
+				if (matchList.size() >= maxResults) break;
+
+				PathNode<?> path = result.getPath();
+
+				// Extract class info from the path chain
+				ClassPathNode classNode = path.getPathOfType(ClassInfo.class);
+				if (classNode == null) continue;
+
+				String className = classNode.getValue().getName();
+
+				// Apply primaryOnly filter
+				if (primaryOnly) {
+					ResourcePathNode rpn = classNode.getPathOfType(WorkspaceResource.class);
+					if (rpn == null || rpn.getValue() != primary) {
+						skippedByFilter++;
+						continue;
+					}
+				}
+
+				// Apply classFilter
+				if (normalizedFilter != null && !className.startsWith(normalizedFilter)) {
+					skippedByFilter++;
+					continue;
+				}
+
+				LinkedHashMap<String, Object> item = new LinkedHashMap<>();
+				item.put("className", className);
+
+				// Extract method info from ClassMemberPathNode
+				if (path instanceof InstructionPathNode instrNode) {
+					item.put("instructionIndex", instrNode.getInstructionIndex());
+					ClassMemberPathNode memberNode = instrNode.getParent();
+					if (memberNode != null) {
+						ClassMember member = (ClassMember) memberNode.getValue();
+						item.put("methodName", member.getName());
+						item.put("methodDescriptor", member.getDescriptor());
+					}
+				} else {
+					// Check parent chain for InstructionPathNode
+					InstructionPathNode instrFromPath = path.getPathOfType(
+							org.objectweb.asm.tree.AbstractInsnNode.class);
+					if (instrFromPath != null) {
+						item.put("instructionIndex", instrFromPath.getInstructionIndex());
+					}
+				}
+
+				// The result value is the matched instructions joined by newline
+				item.put("matchedInstructions", result.toString());
+
+				matchList.add(item);
+			}
+
+			LinkedHashMap<String, Object> resultMap = new LinkedHashMap<>();
+			resultMap.put("patterns", patterns);
+			resultMap.put("sequenceLength", patterns.size());
+			resultMap.put("totalMatches", matchList.size());
+			resultMap.put("results", matchList);
+			if (classFilter != null) {
+				resultMap.put("classFilter", classFilter);
+			}
+			resultMap.put("primaryOnly", primaryOnly);
+			if (skippedByFilter > 0) {
+				resultMap.put("filteredOut", skippedByFilter);
+			}
+			if (matchList.size() >= maxResults) {
+				resultMap.put("warning", "Results were limited to " + maxResults +
+						". Increase 'maxResults' or use 'classFilter' to narrow scope.");
+			}
+			return createJsonResult(resultMap);
+		});
 	}
 
 	// ---- search-files ----
@@ -482,11 +600,16 @@ public class SearchToolProvider extends AbstractToolProvider {
 		Tool tool = Tool.builder()
 				.name("search-text-in-decompilation")
 				.description("Search decompiled source code for a regex pattern. WARNING: This is an expensive operation " +
-						"as it decompiles each class before searching. Use 'maxClasses' to limit scope. " +
+						"as it decompiles each class before searching. Use 'classFilter' to narrow scope to specific packages. " +
+						"By default only searches application classes (primary resource), not library classes. " +
 						"Prefer 'search-strings' or 'search-references' when possible.")
 				.inputSchema(createSchema(
 						Map.of(
 								"pattern", stringParam("Regex pattern to search for in decompiled source"),
+								"classFilter", stringParam("Package prefix to filter classes (e.g. 'com.example' or 'com/example'). " +
+										"Only classes whose name starts with this prefix will be searched."),
+								"primaryOnly", boolParam("If true (default), only search classes in the primary resource " +
+										"(application classes), skipping library/supporting classes."),
 								"maxClasses", intParam("Maximum number of classes to decompile and search (default: 50)")
 						),
 						List.of("pattern")
@@ -494,6 +617,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 				.build();
 		registerTool(tool, (exchange, args) -> {
 			String patternStr = getString(args, "pattern");
+			String classFilter = getOptionalString(args, "classFilter", null);
+			boolean primaryOnly = getBoolean(args, "primaryOnly", true);
 			int maxClasses = getInt(args, "maxClasses", 50);
 			maxClasses = Math.clamp(maxClasses, 1, 500);
 
@@ -504,8 +629,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 			int searched = 0;
 			int failed = 0;
 
-			// Iterate over JVM classes in the workspace
-			List<ClassPathNode> classNodes = workspace.jvmClassesStream()
+			// Build filtered class stream: apply classFilter and primaryOnly before limiting
+			List<ClassPathNode> classNodes = getFilteredClassStream(workspace, classFilter, primaryOnly)
 					.limit(maxClasses)
 					.toList();
 
@@ -558,15 +683,51 @@ public class SearchToolProvider extends AbstractToolProvider {
 			result.put("classesWithMatches", matches.size());
 			result.put("decompileFailures", failed);
 			result.put("results", matches);
+			if (classFilter != null) {
+				result.put("classFilter", classFilter);
+			}
+			result.put("primaryOnly", primaryOnly);
 			if (searched >= maxClasses) {
 				result.put("warning", "Search was limited to " + maxClasses +
-						" classes. Increase 'maxClasses' to search more.");
+						" classes. Increase 'maxClasses' or use 'classFilter' to narrow scope.");
 			}
 			return createJsonResult(result);
 		});
 	}
 
 	// ---- Helper methods ----
+
+	/**
+	 * Build a filtered stream of JVM class path nodes.
+	 * <p>
+	 * When {@code primaryOnly} is true, only classes from the primary workspace resource
+	 * are included (application classes, not library/supporting classes).
+	 * When a {@code classFilter} is provided, only classes whose name starts with
+	 * the normalized filter prefix are included.
+	 *
+	 * @param workspace   The current workspace.
+	 * @param classFilter Optional package prefix filter (dot or slash notation). May be null.
+	 * @param primaryOnly If true, restrict to primary resource classes only.
+	 * @return A filtered stream of {@link ClassPathNode} instances.
+	 */
+	private Stream<ClassPathNode> getFilteredClassStream(Workspace workspace, String classFilter, boolean primaryOnly) {
+		Stream<ClassPathNode> stream = workspace.jvmClassesStream();
+
+		if (primaryOnly) {
+			WorkspaceResource primary = workspace.getPrimaryResource();
+			stream = stream.filter(cpn -> {
+				ResourcePathNode rpn = cpn.getPathOfType(WorkspaceResource.class);
+				return rpn != null && rpn.getValue() == primary;
+			});
+		}
+
+		if (classFilter != null && !classFilter.isEmpty()) {
+			String normalizedFilter = ClassResolver.normalizeClassName(classFilter);
+			stream = stream.filter(cpn -> cpn.getValue().getName().startsWith(normalizedFilter));
+		}
+
+		return stream;
+	}
 
 	/**
 	 * Collect search results into a list of maps with path and result info.

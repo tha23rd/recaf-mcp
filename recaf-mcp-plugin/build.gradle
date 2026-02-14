@@ -16,6 +16,10 @@ ext {
     pluginName = 'Recaf MCP Server'
     pluginDesc = 'MCP server for autonomous Java reverse engineering via LLM agents'
     pluginId = group + '.' + project.name
+
+    // SSVM submodule (built from source with Java 11 + Gradle 7.3)
+    ssvmDir = rootProject.projectDir.toPath().resolve('../ssvm').toFile()
+    ssvmVersion = '2.0.0'
 }
 
 java {
@@ -54,6 +58,24 @@ configurations {
 
 }
 
+// Build SSVM from source using its own Gradle wrapper with Java 11.
+// SSVM requires Gradle 7.3 + Java 11 (Lombok 1.18.24 is incompatible with Java 25),
+// so we invoke it as an external process rather than using composite builds.
+tasks.register('buildSsvm', Exec) {
+    def java11Home = '/usr/lib/jvm/java-11-openjdk-amd64'
+    workingDir ssvmDir
+    environment 'JAVA_HOME', java11Home
+    commandLine "${ssvmDir}/gradlew", 'jar', '--no-daemon'
+
+    inputs.dir("${ssvmDir}/ssvm-core/src")
+    inputs.dir("${ssvmDir}/ssvm-invoke/src")
+    inputs.dir("${ssvmDir}/ssvm-io/src")
+    inputs.file("${ssvmDir}/build.gradle")
+    outputs.file("${ssvmDir}/ssvm-core/build/libs/ssvm-core-${ssvmVersion}.jar")
+    outputs.file("${ssvmDir}/ssvm-invoke/build/libs/ssvm-invoke-${ssvmVersion}.jar")
+    outputs.file("${ssvmDir}/ssvm-io/build/libs/ssvm-io-${ssvmVersion}.jar")
+}
+
 dependencies {
     // Recaf (provided at runtime, not shaded)
     if (recafSnapshots) {
@@ -75,6 +97,17 @@ dependencies {
     // TOON serialization (for token-efficient responses)
     shade 'dev.toonformat:jtoon:1.0.8'
 
+    // SSVM - sandboxed JVM bytecode execution engine (built from source submodule)
+    // The JARs are built by the buildSsvm task; shade includes them in the shadow JAR.
+    // Transitive deps ASM, SLF4J, and jlinker are provided by Recaf at runtime.
+    shade files(
+        "${ssvmDir}/ssvm-core/build/libs/ssvm-core-${ssvmVersion}.jar",
+        "${ssvmDir}/ssvm-invoke/build/libs/ssvm-invoke-${ssvmVersion}.jar",
+        "${ssvmDir}/ssvm-io/build/libs/ssvm-io-${ssvmVersion}.jar",
+    )
+    // SSVM's CAFED00D dep uses package me.coley.cafedude (different from Recaf's software.coley.cafedude)
+    shade 'com.github.Col-E:CAFED00D:1.10.2'
+
     // Test
     testImplementation platform('org.junit:junit-bom:5.11.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -84,6 +117,10 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // Byte Buddy in Mockito 5.x does not officially support Java 25 yet.
+    // The experimental flag allows mocking interfaces that extend JDK types
+    // (e.g., JvmClassBundle extends Map).
+    jvmArgs '-Dnet.bytebuddy.experimental=true'
 }
 
 javafx {
@@ -117,6 +154,7 @@ public final class BuildConfig {
 
 tasks.named('compileJava').configure {
     dependsOn 'generateBuildConfig'
+    dependsOn 'buildSsvm'
 }
 
 // ServiceLoader entry for Recaf plugin discovery
@@ -131,6 +169,7 @@ tasks.register('setupServiceEntry') {
 // Shadow JAR: bundle MCP SDK, Jetty, and TOON into the plugin JAR
 // Excludes Recaf's own dependencies (they're on the classpath at runtime)
 shadowJar {
+    dependsOn 'buildSsvm'
     configurations = [project.configurations.shade]
     archiveClassifier.set('')
 
@@ -138,6 +177,11 @@ shadowJar {
     relocate 'org.eclipse.jetty', 'dev.recafmcp.shadow.jetty'
     relocate 'io.modelcontextprotocol', 'dev.recafmcp.shadow.mcp'
     relocate 'dev.toonformat', 'dev.recafmcp.shadow.toon'
+
+    // SSVM relocation - shade SSVM classes and its old CAFED00D dependency.
+    // ASM, SLF4J, and jlinker are NOT relocated since Recaf provides compatible versions at runtime.
+    relocate 'dev.xdark.ssvm', 'dev.recafmcp.shadow.ssvm'
+    relocate 'me.coley.cafedude', 'dev.recafmcp.shadow.ssvm.cafedude'
 
     from(tasks.named('setupServiceEntry'))
 

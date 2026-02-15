@@ -126,11 +126,16 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 		// Save and set max iterations (Interpreter.setMaxIterations is static/global)
 		int previousMaxIterations = Interpreter.getMaxIterations();
 		StackTraceInterceptor interceptor = null;
+		VirtualMachine vm = null;
 		try {
 			Interpreter.setMaxIterations(maxIterations);
 
 			// Bootstrap VM (lazy, ~2-10s first time)
-			VirtualMachine vm = ssvmManager.getVm();
+			vm = ssvmManager.getVm();
+
+			// Attach the current thread to SSVM — required before any bytecode execution.
+			// MCP tool handlers run on Jetty/Reactor threads which are not registered with SSVM.
+			vm.getThreadManager().attachCurrentThread();
 
 			// Install stack trace interceptor if override frames were provided
 			if (stackFrames != null && !stackFrames.isEmpty()) {
@@ -260,6 +265,9 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			result.put("stderr", stderr);
 			return createJsonResult(result);
 		} finally {
+			if (vm != null) {
+				vm.getThreadManager().detachCurrentThread();
+			}
 			if (interceptor != null) {
 				interceptor.uninstall();
 			}
@@ -316,9 +324,13 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			List<StackTraceInterceptor.StackFrame> stackFrames) {
 
 		StackTraceInterceptor interceptor = null;
+		VirtualMachine vm = null;
 		try {
 			// Bootstrap VM (lazy, ~2-10s first time)
-			VirtualMachine vm = ssvmManager.getVm();
+			vm = ssvmManager.getVm();
+
+			// Attach the current thread to SSVM — required before any bytecode execution.
+			vm.getThreadManager().attachCurrentThread();
 
 			// Install stack trace interceptor if override frames were provided
 			if (stackFrames != null && !stackFrames.isEmpty()) {
@@ -441,6 +453,9 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			result.put("stderr", stderr);
 			return createJsonResult(result);
 		} finally {
+			if (vm != null) {
+				vm.getThreadManager().detachCurrentThread();
+			}
 			if (interceptor != null) {
 				interceptor.uninstall();
 			}
@@ -679,10 +694,14 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 		int previousMaxIterations = Interpreter.getMaxIterations();
 		StackTraceInterceptor interceptor = null;
 		InitializationController initController = null;
+		VirtualMachine vm = null;
 		try {
 			Interpreter.setMaxIterations(maxIterations);
 
-			VirtualMachine vm = ssvmManager.getVm();
+			vm = ssvmManager.getVm();
+
+			// Attach the current thread to SSVM — required before any bytecode execution.
+			vm.getThreadManager().attachCurrentThread();
 
 			// Install stack trace interceptor if override frames were provided
 			if (stackFrames != null && !stackFrames.isEmpty()) {
@@ -723,8 +742,7 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			return createJsonResult(result);
 
 		} catch (VMException e) {
-			VirtualMachine vm = ssvmManager.getVm();
-			return handleVmException(vm, e, maxIterations);
+			return handleVmException(vm != null ? vm : ssvmManager.getVm(), e, maxIterations);
 		} catch (IllegalStateException e) {
 			throw e;
 		} catch (Exception e) {
@@ -739,6 +757,9 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			result.put("stderr", stderr);
 			return createJsonResult(result);
 		} finally {
+			if (vm != null) {
+				vm.getThreadManager().detachCurrentThread();
+			}
 			if (initController != null) {
 				initController.close();
 			}

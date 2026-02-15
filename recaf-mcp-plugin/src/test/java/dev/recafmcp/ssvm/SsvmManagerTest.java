@@ -160,11 +160,11 @@ class SsvmManagerTest {
 	}
 
 	@Test
-	void getHelper_noWorkspace_throwsIllegalState() {
+	void findClass_noWorkspace_throwsIllegalState() {
 		when(workspaceManager.getCurrent()).thenReturn(null);
 
 		assertThrows(IllegalStateException.class,
-				() -> ssvmManager.getHelper());
+				() -> ssvmManager.findClass("com.example.Foo"));
 	}
 
 	@Test

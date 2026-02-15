@@ -3,24 +3,13 @@ package dev.recafmcp.ssvm;
 import dev.xdark.ssvm.VirtualMachine;
 import dev.xdark.ssvm.api.VMInterface;
 import dev.xdark.ssvm.classloading.BootClassFinder;
-import dev.xdark.ssvm.classloading.SupplyingClassLoader;
-import dev.xdark.ssvm.classloading.SupplyingClassLoaderInstaller;
 import dev.xdark.ssvm.execution.Interpreter;
 import dev.xdark.ssvm.execution.Result;
 import dev.xdark.ssvm.filesystem.FileManager;
 import dev.xdark.ssvm.filesystem.HostFileManager;
 import dev.xdark.ssvm.invoke.InvocationUtil;
-import dev.xdark.ssvm.memory.management.MemoryManager;
 import dev.xdark.ssvm.mirror.type.InstanceClass;
 import dev.xdark.ssvm.operation.VMOperations;
-import dev.xdark.ssvm.util.ClassLoaderUtils;
-import dev.xdark.ssvm.util.IOUtil;
-import dev.xdark.ssvm.value.InstanceValue;
-import dev.xdark.ssvm.value.ObjectValue;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.commons.ClassRemapper;
-import org.objectweb.asm.commons.SimpleRemapper;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
@@ -32,10 +21,7 @@ import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.io.ByteArrayOutputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.io.InputStream;
-import java.util.function.Function;
 
 /**
  * Manages the SSVM {@link VirtualMachine} lifecycle for sandboxed bytecode execution.
@@ -61,8 +47,7 @@ public class SsvmManager {
 	private final String bootJdkHome;
 
 	private VirtualMachine vm;
-	private JrtBootClassFinder bootClassFinder;
-	private SupplyingClassLoaderInstaller.Helper helper;
+	private WorkspaceBootClassFinder compositeBootClassFinder;
 	private InvocationUtil invocationUtil;
 	private ByteArrayOutputStream stdoutCapture;
 	private ByteArrayOutputStream stderrCapture;
@@ -110,19 +95,6 @@ public class SsvmManager {
 	}
 
 	/**
-	 * Get the class loader helper for loading workspace classes into SSVM.
-	 *
-	 * @return The helper instance.
-	 * @throws IllegalStateException if no workspace is open or bootstrap fails.
-	 */
-	public synchronized SupplyingClassLoaderInstaller.Helper getHelper() {
-		if (vm == null) {
-			bootstrapVm();
-		}
-		return helper;
-	}
-
-	/**
 	 * Get the {@link InvocationUtil} for calling methods in the VM.
 	 *
 	 * @return The invocation utility.
@@ -146,6 +118,33 @@ public class SsvmManager {
 			bootstrapVm();
 		}
 		return vm.getOperations();
+	}
+
+	/**
+	 * Find and initialize a class by name. Works for both JDK boot classes and workspace classes
+	 * (workspace classes are loaded through the composite boot class finder).
+	 * <p>
+	 * The class is found via {@code vm.findBootstrapClass()} since workspace classes are
+	 * registered through the boot class finder. If the class needs initialization ({@code <clinit>}),
+	 * it is triggered automatically.
+	 *
+	 * @param className Fully qualified class name (dot or slash notation).
+	 * @return The resolved class.
+	 * @throws ClassNotFoundException if the class is not found in boot classes or workspace.
+	 */
+	public synchronized InstanceClass findClass(String className) throws ClassNotFoundException {
+		if (vm == null) {
+			bootstrapVm();
+		}
+		// Normalize to internal name (slashes)
+		String internalName = className.replace('.', '/');
+		InstanceClass cls = (InstanceClass) vm.findBootstrapClass(internalName);
+		if (cls == null) {
+			throw new ClassNotFoundException(className);
+		}
+		// Trigger class initialization if not already done
+		vm.getOperations().initialize(cls);
+		return cls;
 	}
 
 	/**
@@ -184,12 +183,11 @@ public class SsvmManager {
 		if (vm != null) {
 			logger.info("Resetting SSVM instance");
 		}
-		if (bootClassFinder != null) {
-			bootClassFinder.close();
-			bootClassFinder = null;
+		if (compositeBootClassFinder != null) {
+			compositeBootClassFinder.close();
+			compositeBootClassFinder = null;
 		}
 		vm = null;
-		helper = null;
 		invocationUtil = null;
 		stdoutCapture = null;
 		stderrCapture = null;
@@ -236,15 +234,22 @@ public class SsvmManager {
 			stdoutCapture = new ByteArrayOutputStream();
 			stderrCapture = new ByteArrayOutputStream();
 
-			// Create boot class finder from a compatible JDK if needed
-			JrtBootClassFinder jrtFinder = null;
+			// Create composite boot class finder: JDK boot classes + workspace classes.
+			// Loading workspace classes through the boot class finder bypasses the JDK's
+			// ClassLoader infrastructure (ProtectionDomain, CodeSource, file I/O), which
+			// requires many native method stubs that SSVM doesn't provide.
+			BootClassFinder baseFinder;
 			if (bootJdkHome != null) {
-				jrtFinder = new JrtBootClassFinder(bootJdkHome);
+				baseFinder = new JrtBootClassFinder(bootJdkHome);
 				logger.info("Using JDK boot classes from: {}", bootJdkHome);
+			} else {
+				baseFinder = null;
 			}
-			final JrtBootClassFinder finalJrtFinder = jrtFinder;
 
-			// Create VM with custom file manager and boot class finder
+			// Use a holder to capture the composite finder from the anonymous class
+			final WorkspaceBootClassFinder[] finderHolder = new WorkspaceBootClassFinder[1];
+
+			// Create VM with custom file manager and composite boot class finder
 			VirtualMachine newVm = new VirtualMachine() {
 				@Override
 				protected FileManager createFileManager() {
@@ -253,12 +258,16 @@ public class SsvmManager {
 
 				@Override
 				protected BootClassFinder createBootClassFinder() {
-					if (finalJrtFinder != null) {
-						return finalJrtFinder;
-					}
-					return super.createBootClassFinder();
+					BootClassFinder base = baseFinder != null
+							? baseFinder
+							: super.createBootClassFinder();
+					WorkspaceBootClassFinder composite = new WorkspaceBootClassFinder(base);
+					finderHolder[0] = composite;
+					return composite;
 				}
 			};
+
+			WorkspaceBootClassFinder compositeFinder = finderHolder[0];
 
 			// Two-phase bootstrap:
 			// 1) initialize() — links core classes, registers native stubs (System, Thread, etc.)
@@ -273,27 +282,22 @@ public class SsvmManager {
 			// Set sandbox defaults
 			configureSandbox(newVm);
 
-			// Set up class loading bridge from Recaf workspace
-			// Note: Can't use SupplyingClassLoaderInstaller.install() because it uses
-			// ClassLoader.getSystemResourceAsStream() which can't find the shaded
-			// SupplyingClassLoader class in Recaf's plugin classloader.
-			SupplyingClassLoaderInstaller.DataSupplier supplier = createWorkspaceSupplier(workspace);
-			SupplyingClassLoaderInstaller.Helper newHelper = installClassLoader(newVm, supplier);
+			// Now wire up workspace class supply through the boot class finder.
+			// This must happen after bootstrap so the workspace supplier doesn't interfere
+			// with JDK boot class loading during initialization.
+			compositeFinder.setWorkspaceSupplier(
+					internalName -> lookupClassInWorkspace(workspace, internalName));
 
 			// Create utilities
 			InvocationUtil newInvocationUtil = InvocationUtil.create(newVm);
 
 			// Commit state
 			this.vm = newVm;
-			this.bootClassFinder = jrtFinder;
-			this.helper = newHelper;
+			this.compositeBootClassFinder = compositeFinder;
 			this.invocationUtil = newInvocationUtil;
 
 			long elapsed = System.currentTimeMillis() - startTime;
 			logger.info("SSVM bootstrapped in {}ms", elapsed);
-		} catch (IOException e) {
-			logger.error("Failed to install class loader into SSVM", e);
-			throw new IllegalStateException("Failed to install class loader into SSVM", e);
 		} catch (Exception e) {
 			logger.error("Failed to bootstrap SSVM", e);
 			throw new IllegalStateException("Failed to bootstrap SSVM: " + e.getMessage(), e);
@@ -372,113 +376,17 @@ public class SsvmManager {
 	}
 
 	/**
-	 * Install a {@link SupplyingClassLoader} into the VM, working around the shaded classloader issue.
-	 * <p>
-	 * {@link SupplyingClassLoaderInstaller#install} uses {@code ClassLoader.getSystemResourceAsStream()}
-	 * to read the {@link SupplyingClassLoader} bytecode, which fails when running inside Recaf's plugin
-	 * classloader with shaded packages. This method does the same thing but reads the class from the
-	 * plugin's classloader instead.
-	 *
-	 * @param vm       The bootstrapped VM.
-	 * @param supplier The data supplier for workspace classes.
-	 * @return Helper for loading classes into the VM.
-	 * @throws IOException If the SupplyingClassLoader bytecode cannot be read.
-	 */
-	private static SupplyingClassLoaderInstaller.Helper installClassLoader(
-			VirtualMachine vm, SupplyingClassLoaderInstaller.DataSupplier supplier) throws IOException {
-		// Read SupplyingClassLoader bytecode from the plugin's classloader (not system classloader)
-		String loaderName = SupplyingClassLoader.class.getName();
-		String resourcePath = loaderName.replace('.', '/') + ".class";
-		InputStream loaderStream = SupplyingClassLoader.class.getClassLoader().getResourceAsStream(resourcePath);
-		if (loaderStream == null) {
-			throw new FileNotFoundException(loaderName + " (resource: " + resourcePath + ")");
-		}
-
-		// Define the class in the VM with a unique name (same logic as SupplyingClassLoaderInstaller)
-		String uniqueName = loaderName + System.nanoTime();
-		byte[] originalBytes = IOUtil.readAll(loaderStream);
-		byte[] bytes = remapClass(originalBytes, loaderName, uniqueName);
-		ObjectValue nullV = vm.getMemoryManager().nullValue();
-		String sourceName = uniqueName.substring(uniqueName.lastIndexOf('/') + 1) + ".java";
-		InstanceValue loader = ClassLoaderUtils.systemClassLoader(vm);
-		VMOperations operations = vm.getOperations();
-		InstanceClass loaderClass = operations.defineClass(
-				loader, uniqueName, bytes, 0, bytes.length, nullV, sourceName, 0);
-
-		// Register invokers for the native provide methods
-		VMInterface vmi = vm.getInterface();
-		MemoryManager memoryManager = vm.getMemoryManager();
-		vmi.setInvoker(loaderClass, "provideClass", "(Ljava/lang/String;)[B",
-				createProviderInvoker(supplier::getClass, operations, memoryManager));
-		vmi.setInvoker(loaderClass, "provideResource", "(Ljava/lang/String;)[B",
-				createProviderInvoker(supplier::getResource, operations, memoryManager));
-
-		return new SupplyingClassLoaderInstaller.Helper(vm, loaderClass);
-	}
-
-	/**
-	 * Remap a class's internal name using ASM {@link ClassRemapper}.
-	 */
-	private static byte[] remapClass(byte[] bytes, String fromName, String toName) {
-		ClassWriter writer = new ClassWriter(0);
-		ClassReader reader = new ClassReader(bytes);
-		reader.accept(new ClassRemapper(writer,
-				new SimpleRemapper(fromName.replace('.', '/'), toName.replace('.', '/'))), 0);
-		return writer.toByteArray();
-	}
-
-	/**
-	 * Create a {@link dev.xdark.ssvm.api.MethodInvoker} that bridges a supplier function
-	 * to the VM's native method interface.
-	 */
-	private static dev.xdark.ssvm.api.MethodInvoker createProviderInvoker(
-			Function<String, byte[]> supplier, VMOperations operations, MemoryManager memoryManager) {
-		return ctx -> {
-			String paramName = operations.readUtf8(ctx.getLocals().loadReference(1));
-			byte[] data = supplier.apply(paramName);
-			if (data == null) {
-				ctx.setResult(memoryManager.nullValue());
-			} else {
-				ctx.setResult(operations.toVMBytes(data));
-			}
-			return Result.ABORT;
-		};
-	}
-
-	/**
-	 * Create a {@link SupplyingClassLoaderInstaller.DataSupplier} that resolves classes
-	 * from the Recaf workspace.
-	 * <p>
-	 * Lookup order:
-	 * <ol>
-	 *     <li>Primary resource's JVM class bundle</li>
-	 *     <li>Supporting resources' JVM class bundles</li>
-	 * </ol>
-	 * Returns {@code null} if not found (SSVM falls back to host JVM boot classes).
-	 *
-	 * @param workspace The Recaf workspace to bridge.
-	 * @return A data supplier for SSVM class loading.
-	 */
-	private SupplyingClassLoaderInstaller.DataSupplier createWorkspaceSupplier(Workspace workspace) {
-		return SupplyingClassLoaderInstaller.supplyFromFunctions(
-				className -> lookupClassInWorkspace(workspace, className),
-				resourceName -> null  // Resource loading not needed for v1
-		);
-	}
-
-	/**
 	 * Look up a class in the Recaf workspace by name.
 	 * <p>
-	 * The {@link SupplyingClassLoaderInstaller} calls this with dot-notation class names
-	 * (e.g., {@code com.example.Foo}). We convert to internal format (slashes) for Recaf
-	 * bundle lookup.
+	 * Called by the {@link WorkspaceBootClassFinder} with internal names (slashes,
+	 * e.g., {@code com/example/Foo}). Also handles dot notation for compatibility.
 	 *
 	 * @param workspace The workspace to search.
-	 * @param className Class name in dot notation (e.g., {@code com.example.Foo}).
+	 * @param className Class name in internal (slash) or dot notation.
 	 * @return The class bytecode, or {@code null} if not found.
 	 */
 	private byte[] lookupClassInWorkspace(Workspace workspace, String className) {
-		// Convert dot notation to internal name (slashes)
+		// Normalize to internal name (slashes) — handles both slash and dot notation
 		String internalName = className.replace('.', '/');
 
 		// Check primary resource first
@@ -486,6 +394,8 @@ public class SsvmManager {
 		JvmClassBundle primaryBundle = primary.getJvmClassBundle();
 		JvmClassInfo classInfo = primaryBundle.get(internalName);
 		if (classInfo != null) {
+			logger.debug("Workspace lookup '{}' -> found in primary bundle ({} bytes)",
+					internalName, classInfo.getBytecode().length);
 			return classInfo.getBytecode();
 		}
 
@@ -494,11 +404,14 @@ public class SsvmManager {
 			JvmClassBundle supportingBundle = supporting.getJvmClassBundle();
 			JvmClassInfo supportingInfo = supportingBundle.get(internalName);
 			if (supportingInfo != null) {
+				logger.debug("Workspace lookup '{}' -> found in supporting resource ({} bytes)",
+						internalName, supportingInfo.getBytecode().length);
 				return supportingInfo.getBytecode();
 			}
 		}
 
 		// Not found in workspace — SSVM will try host JVM boot classes
+		logger.trace("Workspace lookup '{}' -> not found (falling back to boot classes)", internalName);
 		return null;
 	}
 }

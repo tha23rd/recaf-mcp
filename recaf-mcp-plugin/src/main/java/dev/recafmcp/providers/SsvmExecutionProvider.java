@@ -4,7 +4,6 @@ import dev.recafmcp.ssvm.InitializationController;
 import dev.recafmcp.ssvm.StackTraceInterceptor;
 import dev.recafmcp.ssvm.SsvmManager;
 import dev.xdark.ssvm.VirtualMachine;
-import dev.xdark.ssvm.classloading.SupplyingClassLoaderInstaller;
 import dev.xdark.ssvm.execution.Interpreter;
 import dev.xdark.ssvm.execution.VMException;
 import dev.xdark.ssvm.invoke.Argument;
@@ -142,14 +141,13 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 				interceptor = new StackTraceInterceptor(vm, stackFrames);
 				interceptor.install();
 			}
-			SupplyingClassLoaderInstaller.Helper helper = ssvmManager.getHelper();
 			InvocationUtil util = ssvmManager.getInvocationUtil();
 			VMOperations ops = ssvmManager.getOperations();
 
-			// Load the class
+			// Load the class (workspace classes are loaded via boot class finder)
 			InstanceClass cls;
 			try {
-				cls = helper.loadClass(dotClassName);
+				cls = ssvmManager.findClass(dotClassName);
 			} catch (ClassNotFoundException e) {
 				return createErrorResult("Class not found: " + dotClassName +
 						". Ensure the class exists in the workspace.");
@@ -337,13 +335,12 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 				interceptor = new StackTraceInterceptor(vm, stackFrames);
 				interceptor.install();
 			}
-			SupplyingClassLoaderInstaller.Helper helper = ssvmManager.getHelper();
 			VMOperations ops = ssvmManager.getOperations();
 
-			// Load the class (triggers <clinit> automatically)
+			// Load the class (triggers <clinit> via findClass)
 			InstanceClass cls;
 			try {
-				cls = helper.loadClass(dotClassName);
+				cls = ssvmManager.findClass(dotClassName);
 			} catch (ClassNotFoundException e) {
 				return createErrorResult("Class not found: " + dotClassName +
 						". Ensure the class exists in the workspace.");
@@ -713,18 +710,19 @@ public class SsvmExecutionProvider extends AbstractToolProvider {
 			initController = new InitializationController(vm, dotClassName, allowTransitiveInit);
 			initController.install();
 
-			// Load and initialize the class (loadClass triggers <clinit>)
-			SupplyingClassLoaderInstaller.Helper helper = ssvmManager.getHelper();
+			// Load and initialize the class (findClass triggers <clinit>)
 			InstanceClass cls;
 			try {
-				cls = helper.loadClass(dotClassName);
+				cls = ssvmManager.findClass(dotClassName);
 			} catch (ClassNotFoundException e) {
 				return createErrorResult("Class not found: " + dotClassName +
 						". Ensure the class exists in the workspace.");
 			}
 
 			// SSVM never sets COMPLETE; after successful init, state = IN_PROGRESS
-			boolean initialized = cls.state().get() == InstanceClass.State.IN_PROGRESS;
+			InstanceClass.State actualState = cls.state().get();
+			boolean initialized = actualState == InstanceClass.State.IN_PROGRESS;
+			logger.debug("Class '{}' loaded, state={}, initialized={}", dotClassName, actualState, initialized);
 
 			// Capture stdout/stderr (clinit may produce output)
 			String stdout = ssvmManager.getAndResetStdout();

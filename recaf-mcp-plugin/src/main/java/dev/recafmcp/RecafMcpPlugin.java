@@ -157,7 +157,7 @@ public class RecafMcpPlugin implements Plugin {
 			attach.setResponseSerializer(serializer);
 			attach.registerTools();
 
-			SsvmManager ssvmManager = new SsvmManager(workspaceManager);
+			SsvmManager ssvmManager = new SsvmManager(workspaceManager, findCompatibleJdk());
 			SsvmExecutionProvider ssvmExecution = new SsvmExecutionProvider(mcp, workspaceManager, ssvmManager);
 			ssvmExecution.setResponseSerializer(serializer);
 			ssvmExecution.registerTools();
@@ -196,5 +196,76 @@ public class RecafMcpPlugin implements Plugin {
 			return new JsonResponseSerializer();
 		}
 		return new ToonResponseSerializer();
+	}
+
+	/**
+	 * Find a JDK 11-17 installation for SSVM boot classes.
+	 * <p>
+	 * SSVM requires JDK 11-17 class layouts (Thread.priority field, etc.) which are absent
+	 * in JDK 19+ (Project Loom restructured Thread). This method auto-detects a compatible JDK.
+	 * <p>
+	 * Search order:
+	 * <ol>
+	 *     <li>{@code SSVM_BOOT_JDK} environment variable</li>
+	 *     <li>{@code ssvm.boot.jdk} system property</li>
+	 *     <li>Running JVM if version is 11-18</li>
+	 *     <li>Well-known JDK paths for Linux/macOS/Windows</li>
+	 * </ol>
+	 *
+	 * @return Path to a compatible JDK, or {@code null} if the running JVM is compatible.
+	 */
+	private static String findCompatibleJdk() {
+		// Check explicit configuration
+		String explicit = System.getenv("SSVM_BOOT_JDK");
+		if (explicit == null) {
+			explicit = System.getProperty("ssvm.boot.jdk");
+		}
+		if (explicit != null) {
+			logger.info("Using configured SSVM boot JDK: {}", explicit);
+			return explicit;
+		}
+
+		// Check if running JVM is compatible (JDK 11-18)
+		int version = Runtime.version().feature();
+		if (version >= 11 && version <= 18) {
+			logger.debug("Running JVM (JDK {}) is compatible with SSVM, no boot JDK override needed", version);
+			return null;
+		}
+
+		logger.info("Running JVM is JDK {} (SSVM needs 11-17 boot classes), searching for compatible JDK...", version);
+
+		// Search well-known paths
+		String[] candidates = {
+				// Linux (Debian/Ubuntu)
+				"/usr/lib/jvm/java-17-openjdk-amd64",
+				"/usr/lib/jvm/java-11-openjdk-amd64",
+				// Linux (RHEL/Fedora)
+				"/usr/lib/jvm/java-17-openjdk",
+				"/usr/lib/jvm/java-11-openjdk",
+				// Linux (generic)
+				"/usr/lib/jvm/java-17",
+				"/usr/lib/jvm/java-11",
+				// macOS (Homebrew)
+				"/opt/homebrew/opt/openjdk@17/libexec",
+				"/opt/homebrew/opt/openjdk@11/libexec",
+				"/usr/local/opt/openjdk@17/libexec",
+				"/usr/local/opt/openjdk@11/libexec",
+				// macOS (Temurin via sdkman/jabba)
+				System.getProperty("user.home") + "/.sdkman/candidates/java/17-tem",
+				System.getProperty("user.home") + "/.sdkman/candidates/java/11-tem",
+		};
+
+		for (String candidate : candidates) {
+			java.io.File jrtFs = new java.io.File(candidate, "lib/jrt-fs.jar");
+			if (jrtFs.exists()) {
+				logger.info("Found compatible JDK for SSVM boot classes: {}", candidate);
+				return candidate;
+			}
+		}
+
+		logger.warn("No compatible JDK 11-17 found for SSVM boot classes. " +
+				"Set SSVM_BOOT_JDK environment variable to a JDK 11-17 installation path. " +
+				"VM tools will fail until this is resolved.");
+		return null;
 	}
 }

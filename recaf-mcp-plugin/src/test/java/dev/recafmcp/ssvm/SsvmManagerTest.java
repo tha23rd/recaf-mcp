@@ -38,7 +38,7 @@ class SsvmManagerTest {
 	@BeforeEach
 	void setUp() {
 		workspaceManager = mock(WorkspaceManager.class);
-		ssvmManager = new SsvmManager(workspaceManager);
+		ssvmManager = new SsvmManager(workspaceManager, null);
 	}
 
 	@AfterEach

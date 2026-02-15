@@ -87,7 +87,7 @@ class SsvmIntegrationTest {
 		when(workspaceManager.getCurrent()).thenReturn(workspace);
 
 		// Create real SsvmManager (will bootstrap on first use)
-		ssvmManager = new SsvmManager(workspaceManager);
+		ssvmManager = new SsvmManager(workspaceManager, null);
 
 		// Capture tool handlers registered by SsvmExecutionProvider
 		mockServer = mock(McpSyncServer.class);

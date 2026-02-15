@@ -19,7 +19,9 @@ import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.path.InstructionPathNode;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.match.StringPredicate;
@@ -287,7 +289,11 @@ public class XRefToolProvider extends AbstractToolProvider {
 	}
 
 	/**
-	 * Convert search results into a serializable list of maps.
+	 * Convert search results into a serializable list of maps with structured location info.
+	 * <p>
+	 * Walks each result's {@link PathNode} chain to extract the containing class,
+	 * method (name + descriptor), and instruction index rather than returning
+	 * opaque {@code toString()} output.
 	 *
 	 * @param results The search results.
 	 * @return A list of maps describing each result location.
@@ -297,7 +303,33 @@ public class XRefToolProvider extends AbstractToolProvider {
 		for (Result<?> result : results) {
 			LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
 			PathNode<?> path = result.getPath();
-			entry.put("location", path != null ? path.toString() : "unknown");
+
+			if (path != null) {
+				// Extract containing class
+				ClassInfo classInfo = path.getValueOfType(ClassInfo.class);
+				if (classInfo != null) {
+					entry.put("className", classInfo.getName());
+				}
+
+				// Extract containing method (name + descriptor)
+				ClassMember member = path.getValueOfType(ClassMember.class);
+				if (member != null) {
+					entry.put("memberName", member.getName());
+					entry.put("memberDescriptor", member.getDescriptor());
+				}
+
+				// Extract instruction index if available
+				InstructionPathNode instrNode = path.getPathOfType(AbstractInsnNode.class);
+				if (instrNode != null) {
+					entry.put("instructionIndex", instrNode.getInstructionIndex());
+				}
+			}
+
+			// Fallback: if we couldn't extract structured data, include raw location
+			if (entry.isEmpty()) {
+				entry.put("location", path != null ? path.toString() : "unknown");
+			}
+
 			list.add(entry);
 		}
 		return list;

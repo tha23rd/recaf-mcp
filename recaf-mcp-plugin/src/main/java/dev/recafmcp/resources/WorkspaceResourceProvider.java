@@ -1,6 +1,8 @@
 package dev.recafmcp.resources;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.recafmcp.cache.ClassInventoryCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncResourceSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.ReadResourceResult;
@@ -8,7 +10,6 @@ import io.modelcontextprotocol.spec.McpSchema.Resource;
 import io.modelcontextprotocol.spec.McpSchema.TextResourceContents;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
-import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
@@ -34,10 +35,17 @@ public class WorkspaceResourceProvider {
 
 	private final McpSyncServer server;
 	private final WorkspaceManager workspaceManager;
+	private final ClassInventoryCache classInventoryCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
-	public WorkspaceResourceProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
+	public WorkspaceResourceProvider(McpSyncServer server,
+	                                 WorkspaceManager workspaceManager,
+	                                 ClassInventoryCache classInventoryCache,
+	                                 WorkspaceRevisionTracker revisionTracker) {
 		this.server = server;
 		this.workspaceManager = workspaceManager;
+		this.classInventoryCache = classInventoryCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	/**
@@ -151,17 +159,16 @@ public class WorkspaceResourceProvider {
 			return "{\"error\": \"No workspace is currently open in Recaf.\"}";
 		}
 
-		List<Map<String, Object>> classes = workspace.jvmClassesStream()
-				.map(cpn -> (JvmClassInfo) cpn.getValue())
-				.sorted((a, b) -> a.getName().compareTo(b.getName()))
+		ClassInventoryCache.Inventory inventory = getInventory(workspace);
+		List<Map<String, Object>> classes = inventory.jvmClassEntries().stream()
 				.map(cls -> {
 					LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-					entry.put("name", cls.getName());
-					entry.put("superName", cls.getSuperName());
-					entry.put("access", cls.getAccess());
-					entry.put("interfaceCount", cls.getInterfaces().size());
-					entry.put("methodCount", cls.getMethods().size());
-					entry.put("fieldCount", cls.getFields().size());
+					entry.put("name", cls.name());
+					entry.put("superName", cls.superName());
+					entry.put("access", cls.access());
+					entry.put("interfaceCount", cls.interfaceCount());
+					entry.put("methodCount", cls.methodCount());
+					entry.put("fieldCount", cls.fieldCount());
 					return (Map<String, Object>) entry;
 				})
 				.collect(Collectors.toList());
@@ -182,6 +189,12 @@ public class WorkspaceResourceProvider {
 			logger.error("JSON serialization failed", e);
 			return "{\"error\": \"JSON serialization failed: " + escapeJson(e.getMessage()) + "\"}";
 		}
+	}
+
+	private ClassInventoryCache.Inventory getInventory(Workspace workspace) {
+		long revision = revisionTracker.getRevision(workspace);
+		ClassInventoryCache.Key key = classInventoryCache.keyFor(workspace, revision);
+		return classInventoryCache.getOrLoad(key, () -> ClassInventoryCache.buildInventory(workspace));
 	}
 
 	private static String escapeJson(String text) {

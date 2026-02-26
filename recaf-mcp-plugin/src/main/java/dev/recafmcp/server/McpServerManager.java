@@ -1,6 +1,7 @@
 package dev.recafmcp.server;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.recafmcp.BuildConfig;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.json.jackson.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.json.schema.jackson.DefaultJsonSchemaValidator;
@@ -97,7 +98,7 @@ public class McpServerManager {
 
 		// Build the MCP sync server with capabilities
 		mcpServer = McpServer.sync(transportProvider)
-				.serverInfo("recaf-mcp", "0.1.0")
+				.serverInfo("recaf-mcp", BuildConfig.PLUGIN_VERSION)
 				.jsonMapper(jsonMapper)
 				.jsonSchemaValidator(new DefaultJsonSchemaValidator())
 				.capabilities(ServerCapabilities.builder()

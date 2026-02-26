@@ -1,6 +1,8 @@
 package dev.recafmcp;
 
 import dev.recafmcp.cache.WorkspaceRevisionTracker;
+import dev.recafmcp.cache.CacheConfig;
+import dev.recafmcp.cache.DecompileCache;
 import dev.recafmcp.providers.*;
 import dev.recafmcp.resources.ClassResourceProvider;
 import dev.recafmcp.resources.WorkspaceResourceProvider;
@@ -105,6 +107,8 @@ public class RecafMcpPlugin implements Plugin {
 			ResponseSerializer serializer = resolveResponseSerializer();
 			logger.info("Using response format: {}", serializer.formatName());
 			WorkspaceRevisionTracker revisionTracker = new WorkspaceRevisionTracker();
+			CacheConfig cacheConfig = CacheConfig.fromSystemProperties();
+			DecompileCache decompileCache = new DecompileCache(cacheConfig);
 
 			// Register all tool providers
 			WorkspaceToolProvider workspace = new WorkspaceToolProvider(
@@ -117,11 +121,15 @@ public class RecafMcpPlugin implements Plugin {
 			nav.setResponseSerializer(serializer);
 			nav.registerTools();
 
-			DecompilerToolProvider decompiler = new DecompilerToolProvider(mcp, workspaceManager, decompilerManager);
+			DecompilerToolProvider decompiler = new DecompilerToolProvider(
+					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
+			);
 			decompiler.setResponseSerializer(serializer);
 			decompiler.registerTools();
 
-			SearchToolProvider search = new SearchToolProvider(mcp, workspaceManager, searchService, decompilerManager);
+			SearchToolProvider search = new SearchToolProvider(
+					mcp, workspaceManager, searchService, decompilerManager, decompileCache, revisionTracker
+			);
 			search.setResponseSerializer(serializer);
 			search.registerTools();
 
@@ -176,7 +184,9 @@ public class RecafMcpPlugin implements Plugin {
 
 			// Register MCP resources
 			new WorkspaceResourceProvider(mcp, workspaceManager).register();
-			new ClassResourceProvider(mcp, workspaceManager, decompilerManager).register();
+			new ClassResourceProvider(
+					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
+			).register();
 
 			logger.info("Recaf MCP Server plugin enabled — {} tool providers, {} resource providers",
 					14, 2);

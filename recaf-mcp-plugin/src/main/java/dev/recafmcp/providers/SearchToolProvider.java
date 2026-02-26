@@ -1,5 +1,7 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -58,14 +60,20 @@ public class SearchToolProvider extends AbstractToolProvider {
 
 	private final SearchService searchService;
 	private final DecompilerManager decompilerManager;
+	private final DecompileCache decompileCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public SearchToolProvider(McpSyncServer server,
 	                          WorkspaceManager workspaceManager,
 	                          SearchService searchService,
-	                          DecompilerManager decompilerManager) {
+	                          DecompilerManager decompilerManager,
+	                          DecompileCache decompileCache,
+	                          WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.searchService = searchService;
 		this.decompilerManager = decompilerManager;
+		this.decompileCache = decompileCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -642,15 +650,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 				searched++;
 
 				try {
-					DecompileResult decompResult = decompilerManager
-							.decompile(workspace, jvmClass)
-							.get(10, TimeUnit.SECONDS);
-
-					String source = decompResult.getText();
-					if (source == null || source.isEmpty()) {
-						failed++;
-						continue;
-					}
+					String source = getDecompiledSource(workspace, jvmClass);
 
 					List<Map<String, Object>> lineMatches = new ArrayList<>();
 					String[] lines = source.split("\n");
@@ -696,6 +696,29 @@ public class SearchToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helper methods ----
+
+	private String getDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long revision = revisionTracker.getRevision(workspace);
+		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
+		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
+	}
+
+	private String loadDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		try {
+			DecompileResult decompResult = decompilerManager
+					.decompile(workspace, jvmClassInfo)
+					.get(10, TimeUnit.SECONDS);
+			if (decompResult.getType() != DecompileResult.ResultType.SUCCESS || decompResult.getText() == null) {
+				throw new RuntimeException("Decompilation failed");
+			}
+			return decompResult.getText();
+		} catch (RuntimeException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new RuntimeException("Decompilation failed", e);
+		}
+	}
 
 	/**
 	 * Build a filtered stream of JVM class path nodes.

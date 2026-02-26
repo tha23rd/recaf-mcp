@@ -1,12 +1,13 @@
 package dev.recafmcp.util;
 
-import software.coley.recaf.info.ClassInfo;
+import dev.recafmcp.cache.ClassInventoryCache;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Utility for resolving class names within a Recaf workspace.
@@ -44,6 +45,20 @@ public final class ClassResolver {
 	 * @return the resolved {@link ClassPathNode}, or {@code null} if not found or ambiguous
 	 */
 	public static ClassPathNode resolveClass(Workspace workspace, String name) {
+		return resolveClass(workspace, name, null);
+	}
+
+	/**
+	 * Resolve a class within the given workspace using a precomputed inventory when available.
+	 *
+	 * @param workspace the workspace to search
+	 * @param name      the class name (dot or slash notation)
+	 * @param inventory precomputed inventory snapshot, or {@code null} to scan workspace streams
+	 * @return the resolved {@link ClassPathNode}, or {@code null} if not found or ambiguous
+	 */
+	public static ClassPathNode resolveClass(Workspace workspace,
+	                                         String name,
+	                                         ClassInventoryCache.Inventory inventory) {
 		if (workspace == null || name == null) return null;
 
 		String normalized = normalizeClassName(name);
@@ -53,24 +68,22 @@ public final class ClassResolver {
 		ClassPathNode exact = workspace.findClass(normalized);
 		if (exact != null) return exact;
 
-		// Try simple name match (unqualified class name)
-		String simpleName = normalized.contains("/")
-				? normalized.substring(normalized.lastIndexOf('/') + 1)
-				: normalized;
+		String simpleName = simpleName(normalized);
+		if (inventory != null) {
+			List<String> matches = inventory.classNamesBySimpleName().getOrDefault(simpleName, List.of());
+			if (matches.size() == 1) {
+				return workspace.findClass(matches.getFirst());
+			}
+			return null;
+		}
 
+		// Try simple name match (unqualified class name)
 		List<ClassPathNode> matches = workspace.classesStream()
-				.filter(cpn -> {
-					String fullName = cpn.getValue().getName();
-					String candidateSimple = fullName.contains("/")
-							? fullName.substring(fullName.lastIndexOf('/') + 1)
-							: fullName;
-					return candidateSimple.equals(simpleName);
-				})
+				.filter(cpn -> simpleName(cpn.getValue().getName()).equals(simpleName))
 				.toList();
 
 		// Only return if unambiguous
-		if (matches.size() == 1) return matches.getFirst();
-		return null;
+		return matches.size() == 1 ? matches.getFirst() : null;
 	}
 
 	/**
@@ -86,32 +99,47 @@ public final class ClassResolver {
 	 */
 	public static List<String> findSimilarClassNames(Workspace workspace, String name, int maxResults) {
 		if (workspace == null || name == null || maxResults <= 0) return List.of();
+		return findSimilarClassNames(
+				workspace.classesStream().map(cpn -> cpn.getValue().getName()).toList(),
+				name,
+				maxResults
+		);
+	}
 
+	/**
+	 * Find class names similar to the given name from a precomputed class inventory.
+	 *
+	 * @param inventory  precomputed class inventory
+	 * @param name       class name to search for
+	 * @param maxResults maximum number of results to return
+	 * @return list of similar class name strings in internal notation
+	 */
+	public static List<String> findSimilarClassNames(ClassInventoryCache.Inventory inventory, String name, int maxResults) {
+		if (inventory == null || name == null || maxResults <= 0) return List.of();
+		return findSimilarClassNames(inventory.allClassNames(), name, maxResults);
+	}
+
+	private static List<String> findSimilarClassNames(List<String> classNames, String name, int maxResults) {
 		String normalized = normalizeClassName(name);
 		if (normalized.isEmpty()) return List.of();
 
-		String normalizedLower = normalized.toLowerCase();
-		String simpleName = normalized.contains("/")
-				? normalized.substring(normalized.lastIndexOf('/') + 1)
-				: normalized;
-		String simpleNameLower = simpleName.toLowerCase();
+		String normalizedLower = normalized.toLowerCase(Locale.ROOT);
+		String simpleName = simpleName(normalized);
+		String simpleNameLower = simpleName.toLowerCase(Locale.ROOT);
 
 		record Scored(String className, int score) {}
 
 		List<Scored> scored = new ArrayList<>();
 
-		workspace.classesStream().forEach(cpn -> {
-			String fullName = cpn.getValue().getName();
-			String fullNameLower = fullName.toLowerCase();
-			String candidateSimple = fullName.contains("/")
-					? fullName.substring(fullName.lastIndexOf('/') + 1)
-					: fullName;
-			String candidateSimpleLower = candidateSimple.toLowerCase();
+		for (String fullName : classNames) {
+			String fullNameLower = fullName.toLowerCase(Locale.ROOT);
+			String candidateSimple = simpleName(fullName);
+			String candidateSimpleLower = candidateSimple.toLowerCase(Locale.ROOT);
 
 			// Substring match on full name or simple name
 			if (fullNameLower.contains(normalizedLower) || candidateSimpleLower.contains(simpleNameLower)) {
 				scored.add(new Scored(fullName, 0));
-				return;
+				continue;
 			}
 
 			// Levenshtein distance on simple names
@@ -119,13 +147,18 @@ public final class ClassResolver {
 			if (distance <= 3) {
 				scored.add(new Scored(fullName, distance));
 			}
-		});
+		}
 
 		return scored.stream()
 				.sorted(Comparator.comparingInt(Scored::score).thenComparing(Scored::className))
 				.limit(maxResults)
 				.map(Scored::className)
 				.toList();
+	}
+
+	private static String simpleName(String className) {
+		int lastSlash = className.lastIndexOf('/');
+		return lastSlash >= 0 ? className.substring(lastSlash + 1) : className;
 	}
 
 	/**

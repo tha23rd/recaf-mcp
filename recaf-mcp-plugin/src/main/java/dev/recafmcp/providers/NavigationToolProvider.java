@@ -1,13 +1,13 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.ClassInventoryCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
-import dev.recafmcp.util.ErrorHelper;
 import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.JsonSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import software.coley.recaf.info.ClassInfo;
-import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.member.FieldMember;
 import software.coley.recaf.info.member.MethodMember;
 import software.coley.recaf.path.ClassPathNode;
@@ -18,7 +18,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Collectors;
@@ -28,9 +27,17 @@ import java.util.stream.Collectors;
  * within a Recaf workspace.
  */
 public class NavigationToolProvider extends AbstractToolProvider {
+	private static final int MAX_SUGGESTIONS = 5;
+	private final ClassInventoryCache classInventoryCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
-	public NavigationToolProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
+	public NavigationToolProvider(McpSyncServer server,
+	                              WorkspaceManager workspaceManager,
+	                              ClassInventoryCache classInventoryCache,
+	                              WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
+		this.classInventoryCache = classInventoryCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -59,6 +66,28 @@ public class NavigationToolProvider extends AbstractToolProvider {
 				.build();
 	}
 
+	private ClassInventoryCache.Inventory getInventory(Workspace workspace) {
+		long revision = revisionTracker.getRevision(workspace);
+		ClassInventoryCache.Key key = classInventoryCache.keyFor(workspace, revision);
+		return classInventoryCache.getOrLoad(key, () -> ClassInventoryCache.buildInventory(workspace));
+	}
+
+	private static String classNotFoundWithSuggestions(String normalizedClassName,
+	                                                   ClassInventoryCache.Inventory inventory) {
+		StringBuilder sb = new StringBuilder();
+		sb.append("Class '").append(normalizedClassName).append("' not found.");
+
+		List<String> suggestions = ClassResolver.findSimilarClassNames(inventory, normalizedClassName, MAX_SUGGESTIONS);
+		if (!suggestions.isEmpty()) {
+			sb.append(" Did you mean one of these?\n");
+			for (String suggestion : suggestions) {
+				sb.append("  - ").append(suggestion).append('\n');
+			}
+		}
+
+		return sb.toString();
+	}
+
 	// ---- class-list ----
 
 	private void registerClassList() {
@@ -74,6 +103,7 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String packageFilter = getOptionalString(args, "packageFilter", null);
 			int offset = getInt(args, "offset", 0);
 			int limit = getInt(args, "limit", 100);
@@ -82,15 +112,13 @@ public class NavigationToolProvider extends AbstractToolProvider {
 					? ClassResolver.normalizeClassName(packageFilter)
 					: null;
 
-			List<Map<String, Object>> allClasses = workspace.jvmClassesStream()
-					.map(cpn -> (JvmClassInfo) cpn.getValue())
-					.filter(cls -> normalizedFilter == null || cls.getName().startsWith(normalizedFilter))
-					.sorted((a, b) -> a.getName().compareTo(b.getName()))
+			List<Map<String, Object>> allClasses = inventory.jvmClassEntries().stream()
+					.filter(cls -> normalizedFilter == null || cls.name().startsWith(normalizedFilter))
 					.map(cls -> {
 						Map<String, Object> entry = new LinkedHashMap<>();
-						entry.put("name", cls.getName());
-						entry.put("superName", cls.getSuperName());
-						entry.put("access", cls.getAccess());
+						entry.put("name", cls.name());
+						entry.put("superName", cls.superName());
+						entry.put("access", cls.access());
 						return entry;
 					})
 					.collect(Collectors.toList());
@@ -114,15 +142,15 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String packageFilter = getOptionalString(args, "packageFilter", null);
 
 			String normalizedFilter = packageFilter != null
 					? ClassResolver.normalizeClassName(packageFilter)
 					: null;
 
-			long count = workspace.jvmClassesStream()
-					.map(cpn -> (JvmClassInfo) cpn.getValue())
-					.filter(cls -> normalizedFilter == null || cls.getName().startsWith(normalizedFilter))
+			long count = inventory.jvmClassEntries().stream()
+					.filter(cls -> normalizedFilter == null || cls.name().startsWith(normalizedFilter))
 					.count();
 
 			Map<String, Object> result = new LinkedHashMap<>();
@@ -147,12 +175,13 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			String normalized = ClassResolver.normalizeClassName(className);
 
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			ClassInfo classInfo = node.getValue();
@@ -210,12 +239,13 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			String normalized = ClassResolver.normalizeClassName(className);
 
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			List<String> hierarchy = new ArrayList<>();
@@ -258,14 +288,15 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			int offset = getInt(args, "offset", 0);
 			int limit = getInt(args, "limit", 100);
 
 			String normalized = ClassResolver.normalizeClassName(className);
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			List<MethodMember> allMethods = node.getValue().getMethods();
@@ -300,14 +331,15 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			int offset = getInt(args, "offset", 0);
 			int limit = getInt(args, "limit", 100);
 
 			String normalized = ClassResolver.normalizeClassName(className);
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			List<FieldMember> allFields = node.getValue().getFields();
@@ -349,14 +381,15 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			String fieldName = getString(args, "fieldName");
 			String fieldDescriptor = getOptionalString(args, "fieldDescriptor", null);
 
 			String normalized = ClassResolver.normalizeClassName(className);
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			ClassInfo classInfo = node.getValue();
@@ -418,22 +451,9 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 
-			TreeSet<String> packages = workspace.jvmClassesStream()
-					.map(cpn -> cpn.getValue().getName())
-					.map(name -> {
-						int lastSlash = name.lastIndexOf('/');
-						return lastSlash > 0 ? name.substring(0, lastSlash) : "";
-					})
-					.collect(Collectors.toCollection(TreeSet::new));
-
-			// Remove the default (empty) package entry if present, then re-add as explicit label
-			boolean hasDefaultPackage = packages.remove("");
-
-			List<String> packageList = new ArrayList<>(packages);
-			if (hasDefaultPackage) {
-				packageList.addFirst("(default)");
-			}
+			List<String> packageList = inventory.packageDisplayNames();
 
 			Map<String, Object> result = new LinkedHashMap<>();
 			result.put("packages", packageList);
@@ -474,6 +494,7 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String patternStr = getString(args, "pattern");
 			int offset = getInt(args, "offset", 0);
 			int limit = getInt(args, "limit", 100);
@@ -485,15 +506,13 @@ public class NavigationToolProvider extends AbstractToolProvider {
 				return createErrorResult("Invalid regex pattern: " + e.getMessage());
 			}
 
-			List<Map<String, Object>> matches = workspace.jvmClassesStream()
-					.map(cpn -> (JvmClassInfo) cpn.getValue())
-					.filter(cls -> regex.matcher(cls.getName()).find())
-					.sorted((a, b) -> a.getName().compareTo(b.getName()))
+			List<Map<String, Object>> matches = inventory.jvmClassEntries().stream()
+					.filter(cls -> regex.matcher(cls.name()).find())
 					.map(cls -> {
 						Map<String, Object> entry = new LinkedHashMap<>();
-						entry.put("name", cls.getName());
-						entry.put("superName", cls.getSuperName());
-						entry.put("access", cls.getAccess());
+						entry.put("name", cls.name());
+						entry.put("superName", cls.superName());
+						entry.put("access", cls.access());
 						return entry;
 					})
 					.collect(Collectors.toList());
@@ -518,13 +537,14 @@ public class NavigationToolProvider extends AbstractToolProvider {
 
 		registerTool(tool, (exchange, args) -> {
 			Workspace workspace = requireWorkspace();
+			ClassInventoryCache.Inventory inventory = getInventory(workspace);
 			String className = getString(args, "className");
 			boolean includeNonStatic = getBoolean(args, "includeNonStatic", false);
 
 			String normalized = ClassResolver.normalizeClassName(className);
-			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized);
+			ClassPathNode node = ClassResolver.resolveClass(workspace, normalized, inventory);
 			if (node == null) {
-				return createErrorResult(ErrorHelper.classNotFound(normalized, workspace));
+				return createErrorResult(classNotFoundWithSuggestions(normalized, inventory));
 			}
 
 			ClassInfo classInfo = node.getValue();

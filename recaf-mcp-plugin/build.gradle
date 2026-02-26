@@ -226,8 +226,20 @@ tasks.register('runRecaf', JavaExec) {
         }
         def pluginsDir = new File(recafDir, 'plugins')
         pluginsDir.mkdirs()
+        def currentPluginJar = tasks.named('shadowJar').get().archiveFile.get().asFile
+        def pluginJarPrefix = "${project.name}-"
+        pluginsDir.eachFile { file ->
+            if (!file.isFile()) return
+            if (!file.name.startsWith(pluginJarPrefix) || !file.name.endsWith('.jar')) return
+            if (file.name == currentPluginJar.name) return
+            if (file.delete()) {
+                logger.lifecycle("Removed stale plugin JAR: {}", file)
+            } else {
+                logger.warn("Failed to remove stale plugin JAR: {}", file)
+            }
+        }
         project.copy {
-            from tasks.named('shadowJar').get().archiveFile
+            from currentPluginJar
             into pluginsDir
         }
         logger.lifecycle("Installed plugin to {}", pluginsDir)

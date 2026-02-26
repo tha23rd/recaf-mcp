@@ -220,7 +220,7 @@ public abstract class AbstractToolProvider implements ToolProvider {
 	 */
 	protected Workspace requireWorkspace() {
 		Workspace workspace = workspaceManager.getCurrent();
-		if (workspace == null) {
+		if (!workspaceManager.hasCurrentWorkspace() || workspace == null) {
 			throw new IllegalStateException(
 					"No workspace is currently open in Recaf. " +
 					"Open a JAR, APK, or other supported file before using this tool."

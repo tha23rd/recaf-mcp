@@ -1,5 +1,7 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.SearchQueryCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.ErrorHelper;
 import dev.recafmcp.util.PaginationUtil;
@@ -49,12 +51,18 @@ public class XRefToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(XRefToolProvider.class);
 
 	private final SearchService searchService;
+	private final SearchQueryCache searchQueryCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public XRefToolProvider(McpSyncServer server,
 	                        WorkspaceManager workspaceManager,
-	                        SearchService searchService) {
+	                        SearchService searchService,
+	                        SearchQueryCache searchQueryCache,
+	                        WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.searchService = searchService;
+		this.searchQueryCache = searchQueryCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -91,8 +99,9 @@ public class XRefToolProvider extends AbstractToolProvider {
 			int offset = getInt(args, "offset", 0);
 			int limit = getInt(args, "limit", PaginationUtil.DEFAULT_LIMIT);
 
-			Results results = executeReferenceSearch(workspace, className, memberName, memberDescriptor);
-			List<Map<String, Object>> resultList = buildResultList(results);
+			List<Map<String, Object>> resultList = getCachedReferenceResults(
+					workspace, className, memberName, memberDescriptor
+			);
 			List<Map<String, Object>> page = PaginationUtil.paginate(resultList, offset, limit);
 
 			return createJsonResult(PaginationUtil.paginatedResult(page, offset, limit, resultList.size()));
@@ -245,7 +254,9 @@ public class XRefToolProvider extends AbstractToolProvider {
 			String memberName = getOptionalString(args, "memberName", null);
 			String memberDescriptor = getOptionalString(args, "memberDescriptor", null);
 
-			Results results = executeReferenceSearch(workspace, className, memberName, memberDescriptor);
+			List<Map<String, Object>> results = getCachedReferenceResults(
+					workspace, className, memberName, memberDescriptor
+			);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("className", className);
@@ -257,6 +268,25 @@ public class XRefToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helpers ----
+
+	private List<Map<String, Object>> getCachedReferenceResults(Workspace workspace,
+	                                                            String className,
+	                                                            String memberName,
+	                                                            String memberDescriptor) {
+		String normalizedQuery = "className=" + className +
+				"|memberName=" + cacheKeyPart(memberName) +
+				"|memberDescriptor=" + cacheKeyPart(memberDescriptor);
+		long revision = revisionTracker.getRevision(workspace);
+		SearchQueryCache.Key key = searchQueryCache.keyFor(workspace, revision, "xrefs-to", normalizedQuery);
+		return searchQueryCache.getOrLoad(key, () -> {
+			Results results = executeReferenceSearch(workspace, className, memberName, memberDescriptor);
+			return buildResultList(results);
+		});
+	}
+
+	private static String cacheKeyPart(String value) {
+		return value == null ? "<null>" : value;
+	}
 
 	/**
 	 * Execute a reference search using the search service.

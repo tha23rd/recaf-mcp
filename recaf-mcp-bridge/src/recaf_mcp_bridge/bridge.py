@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import time
 from typing import Any
 
 from mcp.server import Server
@@ -26,15 +27,51 @@ class RecafMcpBridge:
         self.url = f"http://{host}:{port}/mcp"
         self.server = Server("recaf-mcp-bridge")
         self.backend: ClientSession | None = None
+        self._metadata_cache_ttl_seconds = 30.0
+        self._tools_cache: list[Tool] | None = None
+        self._tools_cache_at = 0.0
+        self._resources_cache: list[Resource] | None = None
+        self._resources_cache_at = 0.0
         self._register_handlers()
+
+    def _cache_valid(self, cache_at: float) -> bool:
+        return cache_at > 0 and (time.monotonic() - cache_at) < self._metadata_cache_ttl_seconds
+
+    def _clear_metadata_cache(self):
+        self._tools_cache = None
+        self._tools_cache_at = 0.0
+        self._resources_cache = None
+        self._resources_cache_at = 0.0
+
+    def _set_backend(self, backend: ClientSession | None):
+        if backend is not self.backend:
+            self._clear_metadata_cache()
+        self.backend = backend
+
+    async def _list_tools(self) -> list[Tool]:
+        if not self.backend:
+            raise RuntimeError("Backend not connected")
+        if self._tools_cache is not None and self._cache_valid(self._tools_cache_at):
+            return self._tools_cache
+        result = await self.backend.list_tools()
+        self._tools_cache = result.tools
+        self._tools_cache_at = time.monotonic()
+        return result.tools
+
+    async def _list_resources(self) -> list[Resource]:
+        if not self.backend:
+            raise RuntimeError("Backend not connected")
+        if self._resources_cache is not None and self._cache_valid(self._resources_cache_at):
+            return self._resources_cache
+        result = await self.backend.list_resources()
+        self._resources_cache = result.resources
+        self._resources_cache_at = time.monotonic()
+        return result.resources
 
     def _register_handlers(self):
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
-            if not self.backend:
-                raise RuntimeError("Backend not connected")
-            result = await self.backend.list_tools()
-            return result.tools
+            return await self._list_tools()
 
         @self.server.call_tool()
         async def call_tool(
@@ -47,10 +84,7 @@ class RecafMcpBridge:
 
         @self.server.list_resources()
         async def list_resources() -> list[Resource]:
-            if not self.backend:
-                raise RuntimeError("Backend not connected")
-            result = await self.backend.list_resources()
-            return result.resources
+            return await self._list_resources()
 
         @self.server.read_resource()
         async def read_resource(uri: str) -> str | bytes:
@@ -71,16 +105,19 @@ class RecafMcpBridge:
             self.url, timeout=300.0
         ) as (read_stream, write_stream, _):
             async with ClientSession(read_stream, write_stream) as session:
-                self.backend = session
-                init = await session.initialize()
-                print(
-                    f"Connected to {init.serverInfo.name} v{init.serverInfo.version}",
-                    file=sys.stderr,
-                )
-                async with stdio_server() as (read_s, write_s):
-                    await self.server.run(
-                        read_s, write_s, self.server.create_initialization_options()
+                self._set_backend(session)
+                try:
+                    init = await session.initialize()
+                    print(
+                        f"Connected to {init.serverInfo.name} v{init.serverInfo.version}",
+                        file=sys.stderr,
                     )
+                    async with stdio_server() as (read_s, write_s):
+                        await self.server.run(
+                            read_s, write_s, self.server.create_initialization_options()
+                        )
+                finally:
+                    self._set_backend(None)
 
 
 def main():

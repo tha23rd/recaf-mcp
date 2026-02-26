@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.ErrorHelper;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -41,16 +42,19 @@ public class MappingToolProvider extends AbstractToolProvider {
 	private final MappingApplierService mappingApplierService;
 	private final AggregateMappingManager aggregateMappingManager;
 	private final MappingFormatManager mappingFormatManager;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public MappingToolProvider(McpSyncServer server,
 	                           WorkspaceManager workspaceManager,
 	                           MappingApplierService mappingApplierService,
 	                           AggregateMappingManager aggregateMappingManager,
-	                           MappingFormatManager mappingFormatManager) {
+	                           MappingFormatManager mappingFormatManager,
+	                           WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.mappingApplierService = mappingApplierService;
 		this.aggregateMappingManager = aggregateMappingManager;
 		this.mappingFormatManager = mappingFormatManager;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -100,6 +104,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "renamed");
@@ -147,6 +152,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "renamed");
@@ -196,6 +202,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "renamed");
@@ -278,6 +285,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(mappings);
 			results.apply();
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "renamed");
@@ -349,6 +357,7 @@ public class MappingToolProvider extends AbstractToolProvider {
 			// Apply the parsed mappings
 			MappingResults results = mappingApplierService.inWorkspace(workspace).applyToPrimaryResource(parsedMappings);
 			results.apply();
+			markWorkspaceMutated(workspace);
 
 			// Build summary of what was mapped
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -364,6 +373,10 @@ public class MappingToolProvider extends AbstractToolProvider {
 
 	private static int countFieldMappings(IntermediateMappings mappings) {
 		return mappings.getFields().values().stream().mapToInt(List::size).sum();
+	}
+
+	private void markWorkspaceMutated(Workspace workspace) {
+		revisionTracker.bump(workspace);
 	}
 
 	private static int countMethodMappings(IntermediateMappings mappings) {

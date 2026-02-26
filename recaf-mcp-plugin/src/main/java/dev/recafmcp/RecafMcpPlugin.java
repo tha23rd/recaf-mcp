@@ -1,5 +1,6 @@
 package dev.recafmcp;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.providers.*;
 import dev.recafmcp.resources.ClassResourceProvider;
 import dev.recafmcp.resources.WorkspaceResourceProvider;
@@ -103,9 +104,12 @@ public class RecafMcpPlugin implements Plugin {
 			// Resolve response format: -Drecaf.mcp.format=toon to enable TOON serialization
 			ResponseSerializer serializer = resolveResponseSerializer();
 			logger.info("Using response format: {}", serializer.formatName());
+			WorkspaceRevisionTracker revisionTracker = new WorkspaceRevisionTracker();
 
 			// Register all tool providers
-			WorkspaceToolProvider workspace = new WorkspaceToolProvider(mcp, workspaceManager, resourceImporter, mappingManager);
+			WorkspaceToolProvider workspace = new WorkspaceToolProvider(
+					mcp, workspaceManager, resourceImporter, mappingManager, revisionTracker
+			);
 			workspace.setResponseSerializer(serializer);
 			workspace.registerTools();
 
@@ -133,7 +137,9 @@ public class RecafMcpPlugin implements Plugin {
 			inheritance.setResponseSerializer(serializer);
 			inheritance.registerTools();
 
-			MappingToolProvider mapping = new MappingToolProvider(mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager);
+			MappingToolProvider mapping = new MappingToolProvider(
+					mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager, revisionTracker
+			);
 			mapping.setResponseSerializer(serializer);
 			mapping.registerTools();
 
@@ -141,15 +147,21 @@ public class RecafMcpPlugin implements Plugin {
 			comment.setResponseSerializer(serializer);
 			comment.registerTools();
 
-			CompilerToolProvider compiler = new CompilerToolProvider(mcp, workspaceManager, javacCompiler, phantomGenerator);
+			CompilerToolProvider compiler = new CompilerToolProvider(
+					mcp, workspaceManager, javacCompiler, phantomGenerator, revisionTracker
+			);
 			compiler.setResponseSerializer(serializer);
 			compiler.registerTools();
 
-			AssemblerToolProvider assembler = new AssemblerToolProvider(mcp, workspaceManager, assemblerPipelineManager);
+			AssemblerToolProvider assembler = new AssemblerToolProvider(
+					mcp, workspaceManager, assemblerPipelineManager, revisionTracker
+			);
 			assembler.setResponseSerializer(serializer);
 			assembler.registerTools();
 
-			TransformToolProvider transform = new TransformToolProvider(mcp, workspaceManager, transformationManager, transformationApplierService);
+			TransformToolProvider transform = new TransformToolProvider(
+					mcp, workspaceManager, transformationManager, transformationApplierService, revisionTracker
+			);
 			transform.setResponseSerializer(serializer);
 			transform.registerTools();
 

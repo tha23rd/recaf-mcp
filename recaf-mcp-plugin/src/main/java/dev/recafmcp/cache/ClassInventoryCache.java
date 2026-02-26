@@ -40,10 +40,9 @@ public final class ClassInventoryCache {
 		return cache.get(key, ignored -> loader.get());
 	}
 
-	public Key keyFor(Workspace workspace, long workspaceRevision) {
-		Objects.requireNonNull(workspace, "workspace");
+	public Key keyFor(long workspaceIdentity, long workspaceRevision) {
 		return new Key(
-				Integer.toHexString(System.identityHashCode(workspace)),
+				workspaceIdentity,
 				workspaceRevision
 		);
 	}
@@ -109,7 +108,7 @@ public final class ClassInventoryCache {
 	}
 
 	public record Key(
-			String workspaceIdentity,
+			long workspaceIdentity,
 			long workspaceRevision
 	) {
 	}

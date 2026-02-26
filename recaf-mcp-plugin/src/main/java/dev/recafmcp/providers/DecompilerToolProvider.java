@@ -298,8 +298,9 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 	 */
 	private String decompileSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
 		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
+		DecompileCache.Key key = decompileCache.keyFor(workspaceIdentity, revision, jvmClassInfo, decompilerName);
 		return decompileCache.getOrLoad(key, () -> loadDecompileSource(workspace, jvmClassInfo));
 	}
 

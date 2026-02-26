@@ -3,7 +3,6 @@ package dev.recafmcp.cache;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import software.coley.recaf.info.JvmClassInfo;
-import software.coley.recaf.workspace.model.Workspace;
 
 import java.time.Duration;
 import java.util.Arrays;
@@ -34,15 +33,14 @@ public final class DecompileCache {
 		return cache.get(key, ignored -> loader.get());
 	}
 
-	public Key keyFor(Workspace workspace,
+	public Key keyFor(long workspaceIdentity,
 	                  long workspaceRevision,
 	                  JvmClassInfo classInfo,
 	                  String decompilerName) {
-		Objects.requireNonNull(workspace, "workspace");
 		Objects.requireNonNull(classInfo, "classInfo");
 		Objects.requireNonNull(decompilerName, "decompilerName");
 		return new Key(
-				Integer.toHexString(System.identityHashCode(workspace)),
+				workspaceIdentity,
 				workspaceRevision,
 				classInfo.getName(),
 				Arrays.hashCode(classInfo.getBytecode()),
@@ -51,7 +49,7 @@ public final class DecompileCache {
 	}
 
 	public record Key(
-			String workspaceIdentity,
+			long workspaceIdentity,
 			long workspaceRevision,
 			String className,
 			int classBytecodeHash,

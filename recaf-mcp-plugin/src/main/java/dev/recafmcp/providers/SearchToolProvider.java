@@ -740,25 +740,31 @@ public class SearchToolProvider extends AbstractToolProvider {
 	                                                        String queryType,
 	                                                        String normalizedQuery,
 	                                                        Supplier<List<Map<String, Object>>> loader) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		SearchQueryCache.Key key = searchQueryCache.keyFor(workspace, revision, queryType, normalizedQuery);
+		SearchQueryCache.Key key = searchQueryCache.keyFor(workspaceIdentity, revision, queryType, normalizedQuery);
 		return searchQueryCache.getOrLoad(key, loader);
 	}
 
 	private static String cacheKeyPart(String value) {
-		return value == null ? "<null>" : value;
+		if (value == null) {
+			return "null";
+		}
+		return "value:" + value.length() + ":" + value;
 	}
 
 	private String getDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
 		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
+		DecompileCache.Key key = decompileCache.keyFor(workspaceIdentity, revision, jvmClassInfo, decompilerName);
 		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
 	}
 
 	private InstructionAnalysisCache.ClassAnalysis getInstructionAnalysis(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspace, revision, jvmClassInfo);
+		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspaceIdentity, revision, jvmClassInfo);
 		return instructionAnalysisCache.getOrLoad(key, () -> InstructionAnalysisCache.analyzeClass(jvmClassInfo));
 	}
 

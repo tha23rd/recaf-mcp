@@ -13,7 +13,6 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.util.BlwUtil;
-import software.coley.recaf.workspace.model.Workspace;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -47,11 +46,10 @@ public final class InstructionAnalysisCache {
 		return cache.get(key, ignored -> loader.get());
 	}
 
-	public Key keyFor(Workspace workspace, long workspaceRevision, JvmClassInfo classInfo) {
-		Objects.requireNonNull(workspace, "workspace");
+	public Key keyFor(long workspaceIdentity, long workspaceRevision, JvmClassInfo classInfo) {
 		Objects.requireNonNull(classInfo, "classInfo");
 		return new Key(
-				Integer.toHexString(System.identityHashCode(workspace)),
+				workspaceIdentity,
 				workspaceRevision,
 				classInfo.getName(),
 				Arrays.hashCode(classInfo.getBytecode())
@@ -142,7 +140,7 @@ public final class InstructionAnalysisCache {
 	}
 
 	public record Key(
-			String workspaceIdentity,
+			long workspaceIdentity,
 			long workspaceRevision,
 			String className,
 			int classBytecodeHash

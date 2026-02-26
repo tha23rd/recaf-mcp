@@ -80,9 +80,11 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 			String path = getString(args, "path");
 			logger.info("Opening workspace from: {}", path);
 
+			Workspace previousWorkspace = workspaceManager.getCurrent();
 			WorkspaceResource resource = importResourceFromPath(path);
 			Workspace workspace = new BasicWorkspace(resource);
 			workspaceManager.setCurrent(workspace);
+			revisionTracker.remove(previousWorkspace);
 			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -107,6 +109,7 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 			Workspace workspace = requireWorkspace();
 			workspaceManager.closeCurrent();
 			markWorkspaceMutated(workspace);
+			revisionTracker.remove(workspace);
 			return createTextResult("Workspace closed successfully.");
 		});
 	}

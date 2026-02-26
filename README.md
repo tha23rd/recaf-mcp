@@ -149,6 +149,9 @@ recaf-mcp-bridge [--host localhost] [--port 8085]
 | `RECAF_MCP_HOST` / `-Drecaf.mcp.host` | `127.0.0.1` | Bind address |
 | `RECAF_MCP_PORT` / `-Drecaf.mcp.port` | `8085` | Listen port |
 | `-Drecaf.mcp.format` | `toon` | Response format: `toon` (token-optimized, ~36% smaller) or `json` |
+| `-Drecaf.mcp.cache.enabled` | `true` | Enable/disable plugin-side tool/resource caches |
+| `-Drecaf.mcp.cache.ttl.seconds` | `120` | Cache TTL in seconds for plugin-side caches |
+| `-Drecaf.mcp.cache.max.entries` | `1000` | Maximum entries per plugin-side cache |
 
 Environment variables take priority over system properties.
 

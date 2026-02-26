@@ -1,6 +1,8 @@
 package dev.recafmcp.resources;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncResourceTemplateSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -40,13 +42,19 @@ public class ClassResourceProvider {
 	private final McpSyncServer server;
 	private final WorkspaceManager workspaceManager;
 	private final DecompilerManager decompilerManager;
+	private final DecompileCache decompileCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public ClassResourceProvider(McpSyncServer server,
 	                             WorkspaceManager workspaceManager,
-	                             DecompilerManager decompilerManager) {
+	                             DecompilerManager decompilerManager,
+	                             DecompileCache decompileCache,
+	                             WorkspaceRevisionTracker revisionTracker) {
 		this.server = server;
 		this.workspaceManager = workspaceManager;
 		this.decompilerManager = decompilerManager;
+		this.decompileCache = decompileCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	/**
@@ -145,25 +153,18 @@ public class ClassResourceProvider {
 		if (classInfo.isJvmClass()) {
 			JvmClassInfo jvmClassInfo = classInfo.asJvmClass();
 			try {
-				DecompileResult decompileResult = decompilerManager
-						.decompile(workspace, jvmClassInfo)
-						.get();
-
-				if (decompileResult.getType() == DecompileResult.ResultType.SUCCESS) {
-					result.put("decompiler", decompilerManager.getTargetJvmDecompiler().getName());
-					result.put("source", decompileResult.getText());
-				} else {
-					result.put("decompileError", "Decompilation failed");
-					if (decompileResult.getException() != null) {
-						result.put("decompileErrorDetail", decompileResult.getException().getMessage());
-					}
-				}
+				String source = getDecompiledSource(workspace, jvmClassInfo);
+				result.put("decompiler", decompilerManager.getTargetJvmDecompiler().getName());
+				result.put("source", source);
 			} catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
 				result.put("decompileError", "Decompilation interrupted");
 			} catch (ExecutionException e) {
 				result.put("decompileError", "Decompilation failed: " +
 						(e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
+			} catch (RuntimeException e) {
+				result.put("decompileError", "Decompilation failed");
+				result.put("decompileErrorDetail", e.getMessage());
 			}
 		} else {
 			result.put("decompileError", "Not a JVM class; decompilation not available");
@@ -208,5 +209,29 @@ public class ClassResourceProvider {
 				.replace("\n", "\\n")
 				.replace("\r", "\\r")
 				.replace("\t", "\\t");
+	}
+
+	private String getDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) throws InterruptedException, ExecutionException {
+		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long revision = revisionTracker.getRevision(workspace);
+		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
+		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
+	}
+
+	private String loadDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		try {
+			DecompileResult decompileResult = decompilerManager
+					.decompile(workspace, jvmClassInfo)
+					.get();
+			if (decompileResult.getType() != DecompileResult.ResultType.SUCCESS || decompileResult.getText() == null) {
+				throw new RuntimeException("Decompilation failed");
+			}
+			return decompileResult.getText();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException("Decompilation interrupted", e);
+		} catch (ExecutionException e) {
+			throw new RuntimeException("Decompilation failed", e.getCause() != null ? e.getCause() : e);
+		}
 	}
 }

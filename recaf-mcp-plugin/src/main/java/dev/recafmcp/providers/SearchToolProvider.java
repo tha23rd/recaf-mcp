@@ -1,6 +1,7 @@
 package dev.recafmcp.providers;
 
 import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.InstructionAnalysisCache;
 import dev.recafmcp.cache.SearchQueryCache;
 import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
@@ -35,13 +36,6 @@ import software.coley.recaf.path.InstructionPathNode;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
-import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.ClassReader;
-import software.coley.recaf.util.BlwUtil;
-
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,6 +58,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 	private final SearchService searchService;
 	private final DecompilerManager decompilerManager;
 	private final DecompileCache decompileCache;
+	private final InstructionAnalysisCache instructionAnalysisCache;
 	private final SearchQueryCache searchQueryCache;
 	private final WorkspaceRevisionTracker revisionTracker;
 
@@ -72,12 +67,14 @@ public class SearchToolProvider extends AbstractToolProvider {
 	                          SearchService searchService,
 	                          DecompilerManager decompilerManager,
 	                          DecompileCache decompileCache,
+	                          InstructionAnalysisCache instructionAnalysisCache,
 	                          SearchQueryCache searchQueryCache,
 	                          WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.searchService = searchService;
 		this.decompilerManager = decompilerManager;
 		this.decompileCache = decompileCache;
+		this.instructionAnalysisCache = instructionAnalysisCache;
 		this.searchQueryCache = searchQueryCache;
 		this.revisionTracker = revisionTracker;
 	}
@@ -386,28 +383,19 @@ public class SearchToolProvider extends AbstractToolProvider {
 				totalSearched++;
 
 				try {
-					ClassReader reader = jvmClass.getClassReader();
-					ClassNode classNode = new ClassNode();
-					reader.accept(classNode, ClassReader.SKIP_FRAMES);
-
+					InstructionAnalysisCache.ClassAnalysis analysis = getInstructionAnalysis(workspace, jvmClass);
 					List<Map<String, Object>> methodMatches = new ArrayList<>();
 
-					for (MethodNode methodNode : classNode.methods) {
-						InsnList instructions = methodNode.instructions;
-						if (instructions == null) continue;
-
+					for (InstructionAnalysisCache.MethodAnalysis method : analysis.methods()) {
 						int matchesInMethod = 0;
 						List<Map<String, Object>> insnMatches = new ArrayList<>();
 
-						for (int i = 0; i < instructions.size(); i++) {
-							AbstractInsnNode insn = instructions.get(i);
-							if (insn.getOpcode() < 0) continue; // Skip labels, frames, line numbers
-
-							String insnText = BlwUtil.toString(insn);
+						for (InstructionAnalysisCache.InstructionText instruction : method.instructions()) {
+							String insnText = instruction.text();
 							if (compiledPattern.matcher(insnText).find()) {
 								if (matchesInMethod < maxResultsPerClass) {
 									LinkedHashMap<String, Object> match = new LinkedHashMap<>();
-									match.put("index", i);
+									match.put("index", instruction.index());
 									match.put("instruction", insnText);
 									insnMatches.add(match);
 								}
@@ -418,8 +406,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 
 						if (!insnMatches.isEmpty()) {
 							LinkedHashMap<String, Object> methodMatch = new LinkedHashMap<>();
-							methodMatch.put("methodName", methodNode.name);
-							methodMatch.put("methodDescriptor", methodNode.desc);
+							methodMatch.put("methodName", method.methodName());
+							methodMatch.put("methodDescriptor", method.methodDescriptor());
 							methodMatch.put("matchCount", matchesInMethod);
 							methodMatch.put("matches", insnMatches);
 							methodMatches.add(methodMatch);
@@ -766,6 +754,12 @@ public class SearchToolProvider extends AbstractToolProvider {
 		long revision = revisionTracker.getRevision(workspace);
 		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
 		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
+	}
+
+	private InstructionAnalysisCache.ClassAnalysis getInstructionAnalysis(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		long revision = revisionTracker.getRevision(workspace);
+		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspace, revision, jvmClassInfo);
+		return instructionAnalysisCache.getOrLoad(key, () -> InstructionAnalysisCache.analyzeClass(jvmClassInfo));
 	}
 
 	private String loadDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {

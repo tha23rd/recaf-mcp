@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.InstructionAnalysisCache;
 import dev.recafmcp.cache.SearchQueryCache;
 import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
@@ -8,15 +9,7 @@ import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
-import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.InvokeDynamicInsnNode;
-import org.objectweb.asm.tree.MethodInsnNode;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TypeInsnNode;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
@@ -51,16 +44,19 @@ public class XRefToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(XRefToolProvider.class);
 
 	private final SearchService searchService;
+	private final InstructionAnalysisCache instructionAnalysisCache;
 	private final SearchQueryCache searchQueryCache;
 	private final WorkspaceRevisionTracker revisionTracker;
 
 	public XRefToolProvider(McpSyncServer server,
 	                        WorkspaceManager workspaceManager,
 	                        SearchService searchService,
+	                        InstructionAnalysisCache instructionAnalysisCache,
 	                        SearchQueryCache searchQueryCache,
 	                        WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.searchService = searchService;
+		this.instructionAnalysisCache = instructionAnalysisCache;
 		this.searchQueryCache = searchQueryCache;
 		this.revisionTracker = revisionTracker;
 	}
@@ -148,72 +144,25 @@ public class XRefToolProvider extends AbstractToolProvider {
 			JvmClassInfo jvmClass = classInfo.asJvmClass();
 			String resolvedClassName = classInfo.getName();
 
-			// Parse the class bytecode
-			ClassReader reader = jvmClass.getClassReader();
-			ClassNode classNode = new ClassNode();
-			reader.accept(classNode, ClassReader.SKIP_FRAMES);
+			InstructionAnalysisCache.ClassAnalysis analysis = getInstructionAnalysis(workspace, jvmClass);
 
 			// Collect outgoing references
 			List<Map<String, Object>> methodRefs = new ArrayList<>();
 			List<Map<String, Object>> fieldRefs = new ArrayList<>();
 			Set<String> typeRefs = new LinkedHashSet<>();
 
-			for (MethodNode mn : classNode.methods) {
+			for (InstructionAnalysisCache.MethodAnalysis method : analysis.methods()) {
 				// Filter to specific method if requested
-				if (methodName != null && !mn.name.equals(methodName)) continue;
-				if (methodDescriptor != null && !mn.desc.equals(methodDescriptor)) continue;
+				if (methodName != null && !method.methodName().equals(methodName)) continue;
+				if (methodDescriptor != null && !method.methodDescriptor().equals(methodDescriptor)) continue;
 
-				InsnList instructions = mn.instructions;
-				if (instructions == null) continue;
-
-				String methodContext = mn.name + mn.desc;
-
-				for (int i = 0; i < instructions.size(); i++) {
-					AbstractInsnNode insn = instructions.get(i);
-					switch (insn) {
-						case MethodInsnNode min -> {
-							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
-							ref.put("fromMethod", methodContext);
-							ref.put("targetOwner", min.owner);
-							ref.put("targetName", min.name);
-							ref.put("targetDescriptor", min.desc);
-							ref.put("type", "method");
-							methodRefs.add(ref);
-							typeRefs.add(min.owner);
-						}
-						case FieldInsnNode fin -> {
-							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
-							ref.put("fromMethod", methodContext);
-							ref.put("targetOwner", fin.owner);
-							ref.put("targetName", fin.name);
-							ref.put("targetDescriptor", fin.desc);
-							ref.put("type", "field");
-							fieldRefs.add(ref);
-							typeRefs.add(fin.owner);
-						}
-						case InvokeDynamicInsnNode indy -> {
-							LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
-							ref.put("fromMethod", methodContext);
-							ref.put("bootstrapOwner", indy.bsm.getOwner());
-							ref.put("bootstrapName", indy.bsm.getName());
-							ref.put("bootstrapDescriptor", indy.bsm.getDesc());
-							ref.put("callName", indy.name);
-							ref.put("callDescriptor", indy.desc);
-							ref.put("type", "invokedynamic");
-							if (indy.bsmArgs != null && indy.bsmArgs.length > 0) {
-								List<String> bsmArgStrs = new ArrayList<>();
-								for (Object arg : indy.bsmArgs) bsmArgStrs.add(arg.toString());
-								ref.put("bootstrapArgs", bsmArgStrs);
-							}
-							methodRefs.add(ref);
-							typeRefs.add(indy.bsm.getOwner());
-						}
-						case TypeInsnNode tin -> typeRefs.add(tin.desc);
-						default -> {
-							// Other instruction types don't produce xrefs
-						}
-					}
+				for (InstructionAnalysisCache.MethodReference reference : method.methodReferences()) {
+					methodRefs.add(toMethodReferenceMap(reference));
 				}
+				for (InstructionAnalysisCache.FieldReference reference : method.fieldReferences()) {
+					fieldRefs.add(toFieldReferenceMap(reference));
+				}
+				typeRefs.addAll(method.typeReferences());
 			}
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -286,6 +235,43 @@ public class XRefToolProvider extends AbstractToolProvider {
 
 	private static String cacheKeyPart(String value) {
 		return value == null ? "<null>" : value;
+	}
+
+	private InstructionAnalysisCache.ClassAnalysis getInstructionAnalysis(Workspace workspace, JvmClassInfo classInfo) {
+		long revision = revisionTracker.getRevision(workspace);
+		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspace, revision, classInfo);
+		return instructionAnalysisCache.getOrLoad(key, () -> InstructionAnalysisCache.analyzeClass(classInfo));
+	}
+
+	private static Map<String, Object> toMethodReferenceMap(InstructionAnalysisCache.MethodReference reference) {
+		LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
+		ref.put("fromMethod", reference.fromMethod());
+		ref.put("type", reference.type());
+		if ("invokedynamic".equals(reference.type())) {
+			ref.put("bootstrapOwner", reference.bootstrapOwner());
+			ref.put("bootstrapName", reference.bootstrapName());
+			ref.put("bootstrapDescriptor", reference.bootstrapDescriptor());
+			ref.put("callName", reference.callName());
+			ref.put("callDescriptor", reference.callDescriptor());
+			if (!reference.bootstrapArgs().isEmpty()) {
+				ref.put("bootstrapArgs", reference.bootstrapArgs());
+			}
+		} else {
+			ref.put("targetOwner", reference.targetOwner());
+			ref.put("targetName", reference.targetName());
+			ref.put("targetDescriptor", reference.targetDescriptor());
+		}
+		return ref;
+	}
+
+	private static Map<String, Object> toFieldReferenceMap(InstructionAnalysisCache.FieldReference reference) {
+		LinkedHashMap<String, Object> ref = new LinkedHashMap<>();
+		ref.put("fromMethod", reference.fromMethod());
+		ref.put("targetOwner", reference.targetOwner());
+		ref.put("targetName", reference.targetName());
+		ref.put("targetDescriptor", reference.targetDescriptor());
+		ref.put("type", "field");
+		return ref;
 	}
 
 	/**

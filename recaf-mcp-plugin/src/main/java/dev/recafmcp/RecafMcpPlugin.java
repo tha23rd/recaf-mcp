@@ -4,6 +4,7 @@ import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.cache.CacheConfig;
 import dev.recafmcp.cache.ClassInventoryCache;
 import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.InstructionAnalysisCache;
 import dev.recafmcp.cache.SearchQueryCache;
 import dev.recafmcp.providers.*;
 import dev.recafmcp.resources.ClassResourceProvider;
@@ -113,6 +114,7 @@ public class RecafMcpPlugin implements Plugin {
 			DecompileCache decompileCache = new DecompileCache(cacheConfig);
 			SearchQueryCache searchQueryCache = new SearchQueryCache(cacheConfig);
 			ClassInventoryCache classInventoryCache = new ClassInventoryCache(cacheConfig);
+			InstructionAnalysisCache instructionAnalysisCache = new InstructionAnalysisCache(cacheConfig);
 
 			// Register all tool providers
 			WorkspaceToolProvider workspace = new WorkspaceToolProvider(
@@ -134,13 +136,14 @@ public class RecafMcpPlugin implements Plugin {
 			decompiler.registerTools();
 
 			SearchToolProvider search = new SearchToolProvider(
-					mcp, workspaceManager, searchService, decompilerManager, decompileCache, searchQueryCache, revisionTracker
+					mcp, workspaceManager, searchService, decompilerManager,
+					decompileCache, instructionAnalysisCache, searchQueryCache, revisionTracker
 			);
 			search.setResponseSerializer(serializer);
 			search.registerTools();
 
 			XRefToolProvider xref = new XRefToolProvider(
-					mcp, workspaceManager, searchService, searchQueryCache, revisionTracker
+					mcp, workspaceManager, searchService, instructionAnalysisCache, searchQueryCache, revisionTracker
 			);
 			xref.setResponseSerializer(serializer);
 			xref.registerTools();

@@ -97,6 +97,9 @@ dependencies {
     // TOON serialization (for token-efficient responses)
     shade 'dev.toonformat:jtoon:1.0.8'
 
+    // In-memory caching for read-heavy MCP tools
+    shade 'com.github.ben-manes.caffeine:caffeine:3.1.8'
+
     // SSVM - sandboxed JVM bytecode execution engine (built from source submodule)
     // The JARs are built by the buildSsvm task; shade includes them in the shadow JAR.
     // Transitive deps ASM, SLF4J, and jlinker are provided by Recaf at runtime.

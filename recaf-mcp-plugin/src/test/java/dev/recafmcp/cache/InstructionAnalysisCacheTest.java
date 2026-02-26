@@ -12,7 +12,7 @@ class InstructionAnalysisCacheTest {
 	void sameClassHashReusesParsedInstructionText() {
 		InstructionAnalysisCache cache = new InstructionAnalysisCache(new CacheConfig(true, 120, 1000));
 		InstructionAnalysisCache.Key key = new InstructionAnalysisCache.Key(
-				"workspace-1",
+				1L,
 				7L,
 				"com/example/Test",
 				12345

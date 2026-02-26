@@ -2,7 +2,6 @@ package dev.recafmcp.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import software.coley.recaf.workspace.model.Workspace;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -37,12 +36,11 @@ public final class SearchQueryCache {
 		return cache.get(key, ignored -> freeze(loader.get()));
 	}
 
-	public Key keyFor(Workspace workspace, long workspaceRevision, String queryType, String normalizedQuery) {
-		Objects.requireNonNull(workspace, "workspace");
+	public Key keyFor(long workspaceIdentity, long workspaceRevision, String queryType, String normalizedQuery) {
 		Objects.requireNonNull(queryType, "queryType");
 		Objects.requireNonNull(normalizedQuery, "normalizedQuery");
 		return new Key(
-				Integer.toHexString(System.identityHashCode(workspace)),
+				workspaceIdentity,
 				workspaceRevision,
 				queryType,
 				normalizedQuery
@@ -58,7 +56,7 @@ public final class SearchQueryCache {
 	}
 
 	public record Key(
-			String workspaceIdentity,
+			long workspaceIdentity,
 			long workspaceRevision,
 			String queryType,
 			String normalizedQuery

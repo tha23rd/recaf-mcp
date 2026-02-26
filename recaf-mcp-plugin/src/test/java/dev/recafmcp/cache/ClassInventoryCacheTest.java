@@ -14,7 +14,7 @@ class ClassInventoryCacheTest {
 	@Test
 	void inventoryBuildIsReusedForNavigationResourcesAndResolverSuggestions() {
 		ClassInventoryCache cache = new ClassInventoryCache(new CacheConfig(true, 120, 1000));
-		ClassInventoryCache.Key key = new ClassInventoryCache.Key("workspace-1", 42L);
+		ClassInventoryCache.Key key = new ClassInventoryCache.Key(1L, 42L);
 		AtomicInteger loads = new AtomicInteger();
 
 		ClassInventoryCache.Inventory first = cache.getOrLoad(key, () -> {

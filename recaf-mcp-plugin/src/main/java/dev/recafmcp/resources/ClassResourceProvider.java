@@ -213,8 +213,9 @@ public class ClassResourceProvider {
 
 	private String getDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) throws InterruptedException, ExecutionException {
 		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		DecompileCache.Key key = decompileCache.keyFor(workspace, revision, jvmClassInfo, decompilerName);
+		DecompileCache.Key key = decompileCache.keyFor(workspaceIdentity, revision, jvmClassInfo, decompilerName);
 		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
 	}
 

@@ -11,7 +11,7 @@ class DecompileCacheTest {
 	void cacheHitAvoidsSecondLoad() {
 		DecompileCache cache = new DecompileCache(new CacheConfig(true, 120, 1000));
 		DecompileCache.Key key = new DecompileCache.Key(
-				"workspace-1",
+				1L,
 				1L,
 				"com/example/Test",
 				12345,

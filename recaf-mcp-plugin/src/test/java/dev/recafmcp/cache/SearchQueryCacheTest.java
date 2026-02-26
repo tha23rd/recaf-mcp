@@ -13,7 +13,7 @@ class SearchQueryCacheTest {
 	void sameKeyReturnsCachedResults() {
 		SearchQueryCache cache = new SearchQueryCache(new CacheConfig(true, 120, 1000));
 		SearchQueryCache.Key key = new SearchQueryCache.Key(
-				"workspace-1",
+				1L,
 				5L,
 				"search-strings",
 				"query=hello"

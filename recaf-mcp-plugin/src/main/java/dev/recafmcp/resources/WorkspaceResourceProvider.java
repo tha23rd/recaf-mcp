@@ -192,8 +192,9 @@ public class WorkspaceResourceProvider {
 	}
 
 	private ClassInventoryCache.Inventory getInventory(Workspace workspace) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		ClassInventoryCache.Key key = classInventoryCache.keyFor(workspace, revision);
+		ClassInventoryCache.Key key = classInventoryCache.keyFor(workspaceIdentity, revision);
 		return classInventoryCache.getOrLoad(key, () -> ClassInventoryCache.buildInventory(workspace));
 	}
 

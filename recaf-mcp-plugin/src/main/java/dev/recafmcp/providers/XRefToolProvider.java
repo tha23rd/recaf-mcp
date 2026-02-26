@@ -222,11 +222,12 @@ public class XRefToolProvider extends AbstractToolProvider {
 	                                                            String className,
 	                                                            String memberName,
 	                                                            String memberDescriptor) {
-		String normalizedQuery = "className=" + className +
+		String normalizedQuery = "className=" + cacheKeyPart(className) +
 				"|memberName=" + cacheKeyPart(memberName) +
 				"|memberDescriptor=" + cacheKeyPart(memberDescriptor);
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		SearchQueryCache.Key key = searchQueryCache.keyFor(workspace, revision, "xrefs-to", normalizedQuery);
+		SearchQueryCache.Key key = searchQueryCache.keyFor(workspaceIdentity, revision, "xrefs-to", normalizedQuery);
 		return searchQueryCache.getOrLoad(key, () -> {
 			Results results = executeReferenceSearch(workspace, className, memberName, memberDescriptor);
 			return buildResultList(results);
@@ -234,12 +235,16 @@ public class XRefToolProvider extends AbstractToolProvider {
 	}
 
 	private static String cacheKeyPart(String value) {
-		return value == null ? "<null>" : value;
+		if (value == null) {
+			return "null";
+		}
+		return "value:" + value.length() + ":" + value;
 	}
 
 	private InstructionAnalysisCache.ClassAnalysis getInstructionAnalysis(Workspace workspace, JvmClassInfo classInfo) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
 		long revision = revisionTracker.getRevision(workspace);
-		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspace, revision, classInfo);
+		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspaceIdentity, revision, classInfo);
 		return instructionAnalysisCache.getOrLoad(key, () -> InstructionAnalysisCache.analyzeClass(classInfo));
 	}
 

@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.ErrorHelper;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -45,6 +46,7 @@ public class TransformToolProvider extends AbstractToolProvider {
 
 	private final TransformationManager transformationManager;
 	private final TransformationApplierService transformationApplierService;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	/**
 	 * Stores a snapshot of class bytecodes taken immediately before the last
@@ -57,10 +59,12 @@ public class TransformToolProvider extends AbstractToolProvider {
 	public TransformToolProvider(McpSyncServer server,
 	                             WorkspaceManager workspaceManager,
 	                             TransformationManager transformationManager,
-	                             TransformationApplierService transformationApplierService) {
+	                             TransformationApplierService transformationApplierService,
+	                             WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.transformationManager = transformationManager;
 		this.transformationApplierService = transformationApplierService;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -167,6 +171,7 @@ public class TransformToolProvider extends AbstractToolProvider {
 
 				// Apply the result to the workspace
 				transformResult.apply();
+				markWorkspaceMutated(workspace);
 
 				return buildApplyResult(transformerName, transformResult);
 			} catch (TransformationException e) {
@@ -226,6 +231,7 @@ public class TransformToolProvider extends AbstractToolProvider {
 
 				// Apply the result to the workspace
 				transformResult.apply();
+				markWorkspaceMutated(workspace);
 
 				LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 				result.put("status", "success");
@@ -417,11 +423,16 @@ public class TransformToolProvider extends AbstractToolProvider {
 				result.put("failedCount", failedClasses.size());
 			}
 			result.put("undoAvailable", false);
+			markWorkspaceMutated(workspace);
 			return createJsonResult(result);
 		});
 	}
 
 	// ---- Helper methods ----
+
+	private void markWorkspaceMutated(Workspace workspace) {
+		revisionTracker.bump(workspace);
+	}
 
 	/**
 	 * Resolve a transformer class by its human-readable name (from {@link ClassTransformer#name()})

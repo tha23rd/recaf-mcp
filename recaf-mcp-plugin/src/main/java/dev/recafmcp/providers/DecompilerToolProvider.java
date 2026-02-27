@@ -1,5 +1,7 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.ErrorHelper;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -34,12 +36,18 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(DecompilerToolProvider.class);
 
 	private final DecompilerManager decompilerManager;
+	private final DecompileCache decompileCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public DecompilerToolProvider(McpSyncServer server,
 	                              WorkspaceManager workspaceManager,
-	                              DecompilerManager decompilerManager) {
+	                              DecompilerManager decompilerManager,
+	                              DecompileCache decompileCache,
+	                              WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.decompilerManager = decompilerManager;
+		this.decompileCache = decompileCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -77,20 +85,17 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 			}
 
 			JvmClassInfo jvmClassInfo = classInfo.asJvmClass();
-			DecompileResult decompileResult = decompile(workspace, jvmClassInfo);
-
-			if (decompileResult.getType() != DecompileResult.ResultType.SUCCESS) {
-				String errorMsg = "Decompilation failed for class '" + className + "'";
-				if (decompileResult.getException() != null) {
-					errorMsg += ": " + decompileResult.getException().getMessage();
-				}
-				return createErrorResult(errorMsg);
+			String source;
+			try {
+				source = decompileSource(workspace, jvmClassInfo);
+			} catch (RuntimeException e) {
+				return createErrorResult("Decompilation failed for class '" + className + "': " + e.getMessage());
 			}
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("className", jvmClassInfo.getName());
 			result.put("decompiler", decompilerManager.getTargetJvmDecompiler().getName());
-			result.put("source", decompileResult.getText());
+			result.put("source", source);
 			return createJsonResult(result);
 		});
 	}
@@ -127,17 +132,12 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 			}
 
 			JvmClassInfo jvmClassInfo = classInfo.asJvmClass();
-			DecompileResult decompileResult = decompile(workspace, jvmClassInfo);
-
-			if (decompileResult.getType() != DecompileResult.ResultType.SUCCESS) {
-				String errorMsg = "Decompilation failed for class '" + className + "'";
-				if (decompileResult.getException() != null) {
-					errorMsg += ": " + decompileResult.getException().getMessage();
-				}
-				return createErrorResult(errorMsg);
+			String source;
+			try {
+				source = decompileSource(workspace, jvmClassInfo);
+			} catch (RuntimeException e) {
+				return createErrorResult("Decompilation failed for class '" + className + "': " + e.getMessage());
 			}
-
-			String source = decompileResult.getText();
 			List<String> methodSources = extractMethodSources(source, methodName);
 
 			if (methodSources.isEmpty()) {
@@ -271,17 +271,12 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 			}
 
 			JvmClassInfo jvmClassInfo = classInfo.asJvmClass();
-			DecompileResult decompileResult = decompile(workspace, jvmClassInfo);
-
-			if (decompileResult.getType() != DecompileResult.ResultType.SUCCESS) {
-				String errorMsg = "Decompilation failed for class '" + className + "'";
-				if (decompileResult.getException() != null) {
-					errorMsg += ": " + decompileResult.getException().getMessage();
-				}
-				return createErrorResult(errorMsg);
+			String afterSource;
+			try {
+				afterSource = decompileSource(workspace, jvmClassInfo);
+			} catch (RuntimeException e) {
+				return createErrorResult("Decompilation failed for class '" + className + "': " + e.getMessage());
 			}
-
-			String afterSource = decompileResult.getText();
 			String diff = computeUnifiedDiff(beforeSource, afterSource, className);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -301,7 +296,27 @@ public class DecompilerToolProvider extends AbstractToolProvider {
 	 * re-thrown as unchecked so they are caught by the
 	 * {@link #registerTool} error wrapper.
 	 */
-	private DecompileResult decompile(Workspace workspace, JvmClassInfo jvmClassInfo) {
+	private String decompileSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
+		long revision = revisionTracker.getRevision(workspace);
+		DecompileCache.Key key = decompileCache.keyFor(workspaceIdentity, revision, jvmClassInfo, decompilerName);
+		return decompileCache.getOrLoad(key, () -> loadDecompileSource(workspace, jvmClassInfo));
+	}
+
+	private String loadDecompileSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		DecompileResult decompileResult = decompileResult(workspace, jvmClassInfo);
+		if (decompileResult.getType() != DecompileResult.ResultType.SUCCESS || decompileResult.getText() == null) {
+			String message = "Decompilation did not produce source output";
+			if (decompileResult.getException() != null && decompileResult.getException().getMessage() != null) {
+				message = decompileResult.getException().getMessage();
+			}
+			throw new RuntimeException(message);
+		}
+		return decompileResult.getText();
+	}
+
+	private DecompileResult decompileResult(Workspace workspace, JvmClassInfo jvmClassInfo) {
 		try {
 			return decompilerManager.decompile(workspace, jvmClassInfo).get();
 		} catch (InterruptedException e) {

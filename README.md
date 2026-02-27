@@ -22,7 +22,7 @@ MCP (Model Context Protocol) server plugin for [Recaf](https://github.com/Col-E/
 
 **Option A: Download release**
 
-Download `recaf-mcp-plugin-0.1.0.jar` from the [Releases](../../releases) page and copy it to your Recaf plugins directory:
+Download `recaf-mcp-plugin-0.1.1.jar` from the [Releases](../../releases) page and copy it to your Recaf plugins directory:
 
 | OS | Plugin Directory |
 |---------|----------------------------------------------|
@@ -38,7 +38,7 @@ cd recaf-mcp/recaf-mcp-plugin
 ./gradlew shadowJar
 ```
 
-Then copy `build/libs/recaf-mcp-plugin-0.1.0.jar` to your plugins directory (see table above).
+Then copy `build/libs/recaf-mcp-plugin-0.1.1.jar` to your plugins directory (see table above).
 
 ### Stdio Bridge (optional)
 
@@ -149,6 +149,9 @@ recaf-mcp-bridge [--host localhost] [--port 8085]
 | `RECAF_MCP_HOST` / `-Drecaf.mcp.host` | `127.0.0.1` | Bind address |
 | `RECAF_MCP_PORT` / `-Drecaf.mcp.port` | `8085` | Listen port |
 | `-Drecaf.mcp.format` | `toon` | Response format: `toon` (token-optimized, ~36% smaller) or `json` |
+| `-Drecaf.mcp.cache.enabled` | `true` | Enable/disable plugin-side tool/resource caches |
+| `-Drecaf.mcp.cache.ttl.seconds` | `120` | Cache TTL in seconds for plugin-side caches |
+| `-Drecaf.mcp.cache.max.entries` | `1000` | Maximum entries per plugin-side cache |
 
 Environment variables take priority over system properties.
 

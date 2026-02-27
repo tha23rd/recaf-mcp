@@ -1,5 +1,11 @@
 package dev.recafmcp;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
+import dev.recafmcp.cache.CacheConfig;
+import dev.recafmcp.cache.ClassInventoryCache;
+import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.InstructionAnalysisCache;
+import dev.recafmcp.cache.SearchQueryCache;
 import dev.recafmcp.providers.*;
 import dev.recafmcp.resources.ClassResourceProvider;
 import dev.recafmcp.resources.WorkspaceResourceProvider;
@@ -103,25 +109,42 @@ public class RecafMcpPlugin implements Plugin {
 			// Resolve response format: -Drecaf.mcp.format=toon to enable TOON serialization
 			ResponseSerializer serializer = resolveResponseSerializer();
 			logger.info("Using response format: {}", serializer.formatName());
+			WorkspaceRevisionTracker revisionTracker = new WorkspaceRevisionTracker();
+			CacheConfig cacheConfig = CacheConfig.fromSystemProperties();
+			DecompileCache decompileCache = new DecompileCache(cacheConfig);
+			SearchQueryCache searchQueryCache = new SearchQueryCache(cacheConfig);
+			ClassInventoryCache classInventoryCache = new ClassInventoryCache(cacheConfig);
+			InstructionAnalysisCache instructionAnalysisCache = new InstructionAnalysisCache(cacheConfig);
 
 			// Register all tool providers
-			WorkspaceToolProvider workspace = new WorkspaceToolProvider(mcp, workspaceManager, resourceImporter, mappingManager);
+			WorkspaceToolProvider workspace = new WorkspaceToolProvider(
+					mcp, workspaceManager, resourceImporter, mappingManager, revisionTracker
+			);
 			workspace.setResponseSerializer(serializer);
 			workspace.registerTools();
 
-			NavigationToolProvider nav = new NavigationToolProvider(mcp, workspaceManager);
+			NavigationToolProvider nav = new NavigationToolProvider(
+					mcp, workspaceManager, classInventoryCache, revisionTracker
+			);
 			nav.setResponseSerializer(serializer);
 			nav.registerTools();
 
-			DecompilerToolProvider decompiler = new DecompilerToolProvider(mcp, workspaceManager, decompilerManager);
+			DecompilerToolProvider decompiler = new DecompilerToolProvider(
+					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
+			);
 			decompiler.setResponseSerializer(serializer);
 			decompiler.registerTools();
 
-			SearchToolProvider search = new SearchToolProvider(mcp, workspaceManager, searchService, decompilerManager);
+			SearchToolProvider search = new SearchToolProvider(
+					mcp, workspaceManager, searchService, decompilerManager,
+					decompileCache, instructionAnalysisCache, searchQueryCache, revisionTracker
+			);
 			search.setResponseSerializer(serializer);
 			search.registerTools();
 
-			XRefToolProvider xref = new XRefToolProvider(mcp, workspaceManager, searchService);
+			XRefToolProvider xref = new XRefToolProvider(
+					mcp, workspaceManager, searchService, instructionAnalysisCache, searchQueryCache, revisionTracker
+			);
 			xref.setResponseSerializer(serializer);
 			xref.registerTools();
 
@@ -133,7 +156,9 @@ public class RecafMcpPlugin implements Plugin {
 			inheritance.setResponseSerializer(serializer);
 			inheritance.registerTools();
 
-			MappingToolProvider mapping = new MappingToolProvider(mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager);
+			MappingToolProvider mapping = new MappingToolProvider(
+					mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager, revisionTracker
+			);
 			mapping.setResponseSerializer(serializer);
 			mapping.registerTools();
 
@@ -141,15 +166,21 @@ public class RecafMcpPlugin implements Plugin {
 			comment.setResponseSerializer(serializer);
 			comment.registerTools();
 
-			CompilerToolProvider compiler = new CompilerToolProvider(mcp, workspaceManager, javacCompiler, phantomGenerator);
+			CompilerToolProvider compiler = new CompilerToolProvider(
+					mcp, workspaceManager, javacCompiler, phantomGenerator, revisionTracker
+			);
 			compiler.setResponseSerializer(serializer);
 			compiler.registerTools();
 
-			AssemblerToolProvider assembler = new AssemblerToolProvider(mcp, workspaceManager, assemblerPipelineManager);
+			AssemblerToolProvider assembler = new AssemblerToolProvider(
+					mcp, workspaceManager, assemblerPipelineManager, revisionTracker
+			);
 			assembler.setResponseSerializer(serializer);
 			assembler.registerTools();
 
-			TransformToolProvider transform = new TransformToolProvider(mcp, workspaceManager, transformationManager, transformationApplierService);
+			TransformToolProvider transform = new TransformToolProvider(
+					mcp, workspaceManager, transformationManager, transformationApplierService, revisionTracker
+			);
 			transform.setResponseSerializer(serializer);
 			transform.registerTools();
 
@@ -163,8 +194,12 @@ public class RecafMcpPlugin implements Plugin {
 			ssvmExecution.registerTools();
 
 			// Register MCP resources
-			new WorkspaceResourceProvider(mcp, workspaceManager).register();
-			new ClassResourceProvider(mcp, workspaceManager, decompilerManager).register();
+			new WorkspaceResourceProvider(
+					mcp, workspaceManager, classInventoryCache, revisionTracker
+			).register();
+			new ClassResourceProvider(
+					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
+			).register();
 
 			logger.info("Recaf MCP Server plugin enabled — {} tool providers, {} resource providers",
 					14, 2);

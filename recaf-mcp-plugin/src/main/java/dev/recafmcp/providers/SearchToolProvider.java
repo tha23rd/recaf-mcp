@@ -1,5 +1,9 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.DecompileCache;
+import dev.recafmcp.cache.InstructionAnalysisCache;
+import dev.recafmcp.cache.SearchQueryCache;
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.PaginationUtil;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -32,18 +36,13 @@ import software.coley.recaf.path.InstructionPathNode;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
-import org.objectweb.asm.tree.AbstractInsnNode;
-import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.InsnList;
-import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.ClassReader;
-import software.coley.recaf.util.BlwUtil;
-
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -58,14 +57,26 @@ public class SearchToolProvider extends AbstractToolProvider {
 
 	private final SearchService searchService;
 	private final DecompilerManager decompilerManager;
+	private final DecompileCache decompileCache;
+	private final InstructionAnalysisCache instructionAnalysisCache;
+	private final SearchQueryCache searchQueryCache;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public SearchToolProvider(McpSyncServer server,
 	                          WorkspaceManager workspaceManager,
 	                          SearchService searchService,
-	                          DecompilerManager decompilerManager) {
+	                          DecompilerManager decompilerManager,
+	                          DecompileCache decompileCache,
+	                          InstructionAnalysisCache instructionAnalysisCache,
+	                          SearchQueryCache searchQueryCache,
+	                          WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.searchService = searchService;
 		this.decompilerManager = decompilerManager;
+		this.decompileCache = decompileCache;
+		this.instructionAnalysisCache = instructionAnalysisCache;
+		this.searchQueryCache = searchQueryCache;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -103,12 +114,21 @@ public class SearchToolProvider extends AbstractToolProvider {
 			int limit = getInt(args, "limit", PaginationUtil.DEFAULT_LIMIT);
 
 			Workspace workspace = requireWorkspace();
-			StringPredicate predicate = new StringPredicate("contains-ignore-case",
-					s -> s != null && s.toLowerCase().contains(query.toLowerCase()));
-			StringQuery stringQuery = new StringQuery(predicate);
-			Results results = searchService.search(workspace, stringQuery);
-
-			List<Map<String, Object>> allItems = collectResults(results);
+			String queryLower = query.toLowerCase(Locale.ROOT);
+			List<Map<String, Object>> allItems = getCachedQueryResults(
+					workspace,
+					"search-strings",
+					"query=" + queryLower,
+					() -> {
+						StringPredicate predicate = new StringPredicate(
+								"contains-ignore-case",
+								s -> s != null && s.toLowerCase(Locale.ROOT).contains(queryLower)
+						);
+						StringQuery stringQuery = new StringQuery(predicate);
+						Results results = searchService.search(workspace, stringQuery);
+						return collectResults(results);
+					}
+			);
 			List<Map<String, Object>> page = PaginationUtil.paginate(allItems, offset, limit);
 			return createJsonResult(PaginationUtil.paginatedResult(page, offset, limit, allItems.size()));
 		});
@@ -130,14 +150,25 @@ public class SearchToolProvider extends AbstractToolProvider {
 			String query = getString(args, "query");
 
 			Workspace workspace = requireWorkspace();
-			StringPredicate predicate = new StringPredicate("contains-ignore-case",
-					s -> s != null && s.toLowerCase().contains(query.toLowerCase()));
-			StringQuery stringQuery = new StringQuery(predicate);
-			Results results = searchService.search(workspace, stringQuery);
+			String queryLower = query.toLowerCase(Locale.ROOT);
+			List<Map<String, Object>> allItems = getCachedQueryResults(
+					workspace,
+					"search-strings",
+					"query=" + queryLower,
+					() -> {
+						StringPredicate predicate = new StringPredicate(
+								"contains-ignore-case",
+								s -> s != null && s.toLowerCase(Locale.ROOT).contains(queryLower)
+						);
+						StringQuery stringQuery = new StringQuery(predicate);
+						Results results = searchService.search(workspace, stringQuery);
+						return collectResults(results);
+					}
+			);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("query", query);
-			result.put("count", results.size());
+			result.put("count", allItems.size());
 			return createJsonResult(result);
 		});
 	}
@@ -166,12 +197,21 @@ public class SearchToolProvider extends AbstractToolProvider {
 			Number targetNumber = parseNumber(valueStr);
 			Workspace workspace = requireWorkspace();
 
-			NumberPredicate predicate = new NumberPredicate("equals",
-					n -> n != null && n.doubleValue() == targetNumber.doubleValue());
-			NumberQuery numberQuery = new NumberQuery(predicate);
-			Results results = searchService.search(workspace, numberQuery);
-
-			List<Map<String, Object>> allItems = collectResults(results);
+			String normalizedValue = Double.toString(targetNumber.doubleValue());
+			List<Map<String, Object>> allItems = getCachedQueryResults(
+					workspace,
+					"search-numbers",
+					"value=" + normalizedValue,
+					() -> {
+						NumberPredicate predicate = new NumberPredicate(
+								"equals",
+								n -> n != null && n.doubleValue() == targetNumber.doubleValue()
+						);
+						NumberQuery numberQuery = new NumberQuery(predicate);
+						Results results = searchService.search(workspace, numberQuery);
+						return collectResults(results);
+					}
+			);
 			List<Map<String, Object>> page = PaginationUtil.paginate(allItems, offset, limit);
 			return createJsonResult(PaginationUtil.paginatedResult(page, offset, limit, allItems.size()));
 		});
@@ -208,28 +248,37 @@ public class SearchToolProvider extends AbstractToolProvider {
 			}
 
 			Workspace workspace = requireWorkspace();
+			String normalizedKey = "className=" + cacheKeyPart(className) +
+					"|memberName=" + cacheKeyPart(memberName) +
+					"|memberDescriptor=" + cacheKeyPart(memberDescriptor);
+			List<Map<String, Object>> allItems = getCachedQueryResults(
+					workspace,
+					"search-references",
+					normalizedKey,
+					() -> {
+						// Build predicates for each provided parameter
+						StringPredicate ownerPred = className != null
+								? new StringPredicate("contains", s -> s != null && s.contains(className))
+								: null;
+						StringPredicate namePred = memberName != null
+								? new StringPredicate("contains", s -> s != null && s.contains(memberName))
+								: null;
+						StringPredicate descPred = memberDescriptor != null
+								? new StringPredicate("contains", s -> s != null && s.contains(memberDescriptor))
+								: null;
 
-			// Build predicates for each provided parameter
-			StringPredicate ownerPred = className != null
-					? new StringPredicate("contains", s -> s != null && s.contains(className))
-					: null;
-			StringPredicate namePred = memberName != null
-					? new StringPredicate("contains", s -> s != null && s.contains(memberName))
-					: null;
-			StringPredicate descPred = memberDescriptor != null
-					? new StringPredicate("contains", s -> s != null && s.contains(memberDescriptor))
-					: null;
+						ReferenceQuery refQuery;
+						if (namePred == null && descPred == null) {
+							// Class-only reference query
+							refQuery = new ReferenceQuery(ownerPred);
+						} else {
+							refQuery = new ReferenceQuery(ownerPred, namePred, descPred);
+						}
 
-			ReferenceQuery refQuery;
-			if (namePred == null && descPred == null) {
-				// Class-only reference query
-				refQuery = new ReferenceQuery(ownerPred);
-			} else {
-				refQuery = new ReferenceQuery(ownerPred, namePred, descPred);
-			}
-
-			Results results = searchService.search(workspace, refQuery);
-			List<Map<String, Object>> allItems = collectResults(results);
+						Results results = searchService.search(workspace, refQuery);
+						return collectResults(results);
+					}
+			);
 			List<Map<String, Object>> page = PaginationUtil.paginate(allItems, offset, limit);
 			return createJsonResult(PaginationUtil.paginatedResult(page, offset, limit, allItems.size()));
 		});
@@ -260,14 +309,21 @@ public class SearchToolProvider extends AbstractToolProvider {
 
 			// Use regex predicate for name matching
 			Pattern compiledPattern = Pattern.compile(namePattern, Pattern.CASE_INSENSITIVE);
-			StringPredicate namePred = new StringPredicate("regex-partial",
-					s -> s != null && compiledPattern.matcher(s).find());
-
-			// DeclarationQuery needs owner, name, desc predicates — we only filter by name
-			DeclarationQuery declQuery = new DeclarationQuery(null, namePred, null);
-			Results results = searchService.search(workspace, declQuery);
-
-			List<Map<String, Object>> allItems = collectResults(results);
+			List<Map<String, Object>> allItems = getCachedQueryResults(
+					workspace,
+					"search-declarations",
+					"namePattern=" + namePattern,
+					() -> {
+						StringPredicate namePred = new StringPredicate(
+								"regex-partial",
+								s -> s != null && compiledPattern.matcher(s).find()
+						);
+						// DeclarationQuery needs owner, name, desc predicates — we only filter by name
+						DeclarationQuery declQuery = new DeclarationQuery(null, namePred, null);
+						Results results = searchService.search(workspace, declQuery);
+						return collectResults(results);
+					}
+			);
 			List<Map<String, Object>> page = PaginationUtil.paginate(allItems, offset, limit);
 			return createJsonResult(PaginationUtil.paginatedResult(page, offset, limit, allItems.size()));
 		});
@@ -327,28 +383,19 @@ public class SearchToolProvider extends AbstractToolProvider {
 				totalSearched++;
 
 				try {
-					ClassReader reader = jvmClass.getClassReader();
-					ClassNode classNode = new ClassNode();
-					reader.accept(classNode, ClassReader.SKIP_FRAMES);
-
+					InstructionAnalysisCache.ClassAnalysis analysis = getInstructionAnalysis(workspace, jvmClass);
 					List<Map<String, Object>> methodMatches = new ArrayList<>();
 
-					for (MethodNode methodNode : classNode.methods) {
-						InsnList instructions = methodNode.instructions;
-						if (instructions == null) continue;
-
+					for (InstructionAnalysisCache.MethodAnalysis method : analysis.methods()) {
 						int matchesInMethod = 0;
 						List<Map<String, Object>> insnMatches = new ArrayList<>();
 
-						for (int i = 0; i < instructions.size(); i++) {
-							AbstractInsnNode insn = instructions.get(i);
-							if (insn.getOpcode() < 0) continue; // Skip labels, frames, line numbers
-
-							String insnText = BlwUtil.toString(insn);
+						for (InstructionAnalysisCache.InstructionText instruction : method.instructions()) {
+							String insnText = instruction.text();
 							if (compiledPattern.matcher(insnText).find()) {
 								if (matchesInMethod < maxResultsPerClass) {
 									LinkedHashMap<String, Object> match = new LinkedHashMap<>();
-									match.put("index", i);
+									match.put("index", instruction.index());
 									match.put("instruction", insnText);
 									insnMatches.add(match);
 								}
@@ -359,8 +406,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 
 						if (!insnMatches.isEmpty()) {
 							LinkedHashMap<String, Object> methodMatch = new LinkedHashMap<>();
-							methodMatch.put("methodName", methodNode.name);
-							methodMatch.put("methodDescriptor", methodNode.desc);
+							methodMatch.put("methodName", method.methodName());
+							methodMatch.put("methodDescriptor", method.methodDescriptor());
 							methodMatch.put("matchCount", matchesInMethod);
 							methodMatch.put("matches", insnMatches);
 							methodMatches.add(methodMatch);
@@ -642,15 +689,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 				searched++;
 
 				try {
-					DecompileResult decompResult = decompilerManager
-							.decompile(workspace, jvmClass)
-							.get(10, TimeUnit.SECONDS);
-
-					String source = decompResult.getText();
-					if (source == null || source.isEmpty()) {
-						failed++;
-						continue;
-					}
+					String source = getDecompiledSource(workspace, jvmClass);
 
 					List<Map<String, Object>> lineMatches = new ArrayList<>();
 					String[] lines = source.split("\n");
@@ -696,6 +735,54 @@ public class SearchToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helper methods ----
+
+	private List<Map<String, Object>> getCachedQueryResults(Workspace workspace,
+	                                                        String queryType,
+	                                                        String normalizedQuery,
+	                                                        Supplier<List<Map<String, Object>>> loader) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
+		long revision = revisionTracker.getRevision(workspace);
+		SearchQueryCache.Key key = searchQueryCache.keyFor(workspaceIdentity, revision, queryType, normalizedQuery);
+		return searchQueryCache.getOrLoad(key, loader);
+	}
+
+	private static String cacheKeyPart(String value) {
+		if (value == null) {
+			return "null";
+		}
+		return "value:" + value.length() + ":" + value;
+	}
+
+	private String getDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		String decompilerName = decompilerManager.getTargetJvmDecompiler().getName();
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
+		long revision = revisionTracker.getRevision(workspace);
+		DecompileCache.Key key = decompileCache.keyFor(workspaceIdentity, revision, jvmClassInfo, decompilerName);
+		return decompileCache.getOrLoad(key, () -> loadDecompiledSource(workspace, jvmClassInfo));
+	}
+
+	private InstructionAnalysisCache.ClassAnalysis getInstructionAnalysis(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		long workspaceIdentity = revisionTracker.getIdentity(workspace);
+		long revision = revisionTracker.getRevision(workspace);
+		InstructionAnalysisCache.Key key = instructionAnalysisCache.keyFor(workspaceIdentity, revision, jvmClassInfo);
+		return instructionAnalysisCache.getOrLoad(key, () -> InstructionAnalysisCache.analyzeClass(jvmClassInfo));
+	}
+
+	private String loadDecompiledSource(Workspace workspace, JvmClassInfo jvmClassInfo) {
+		try {
+			DecompileResult decompResult = decompilerManager
+					.decompile(workspace, jvmClassInfo)
+					.get(10, TimeUnit.SECONDS);
+			if (decompResult.getType() != DecompileResult.ResultType.SUCCESS || decompResult.getText() == null) {
+				throw new RuntimeException("Decompilation failed");
+			}
+			return decompResult.getText();
+		} catch (RuntimeException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new RuntimeException("Decompilation failed", e);
+		}
+	}
 
 	/**
 	 * Build a filtered stream of JVM class path nodes.

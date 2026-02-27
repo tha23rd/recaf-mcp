@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'dev.recafmcp'
-version = '0.1.0'
+version = '0.1.1'
 
 ext {
     // Recaf snapshot version (commit hash from JitPack)
@@ -96,6 +96,9 @@ dependencies {
 
     // TOON serialization (for token-efficient responses)
     shade 'dev.toonformat:jtoon:1.0.8'
+
+    // In-memory caching for read-heavy MCP tools
+    shade 'com.github.ben-manes.caffeine:caffeine:3.1.8'
 
     // SSVM - sandboxed JVM bytecode execution engine (built from source submodule)
     // The JARs are built by the buildSsvm task; shade includes them in the shadow JAR.
@@ -223,8 +226,20 @@ tasks.register('runRecaf', JavaExec) {
         }
         def pluginsDir = new File(recafDir, 'plugins')
         pluginsDir.mkdirs()
+        def currentPluginJar = tasks.named('shadowJar').get().archiveFile.get().asFile
+        def pluginJarPrefix = "${project.name}-"
+        pluginsDir.eachFile { file ->
+            if (!file.isFile()) return
+            if (!file.name.startsWith(pluginJarPrefix) || !file.name.endsWith('.jar')) return
+            if (file.name == currentPluginJar.name) return
+            if (file.delete()) {
+                logger.lifecycle("Removed stale plugin JAR: {}", file)
+            } else {
+                logger.warn("Failed to remove stale plugin JAR: {}", file)
+            }
+        }
         project.copy {
-            from tasks.named('shadowJar').get().archiveFile
+            from currentPluginJar
             into pluginsDir
         }
         logger.lifecycle("Installed plugin to {}", pluginsDir)

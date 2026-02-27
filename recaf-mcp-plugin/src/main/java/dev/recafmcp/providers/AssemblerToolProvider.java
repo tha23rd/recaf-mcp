@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import dev.recafmcp.util.ClassResolver;
 import dev.recafmcp.util.ErrorHelper;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -35,12 +36,15 @@ public class AssemblerToolProvider extends AbstractToolProvider {
 	private static final Logger logger = Logging.get(AssemblerToolProvider.class);
 
 	private final AssemblerPipelineManager pipelineManager;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public AssemblerToolProvider(McpSyncServer server,
 	                             WorkspaceManager workspaceManager,
-	                             AssemblerPipelineManager pipelineManager) {
+	                             AssemblerPipelineManager pipelineManager,
+	                             WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.pipelineManager = pipelineManager;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -197,6 +201,7 @@ public class AssemblerToolProvider extends AbstractToolProvider {
 			JvmClassInfo assembledJvmClass = assembledClass.asJvmClass();
 			JvmClassBundle bundle = workspace.getPrimaryResource().getJvmClassBundle();
 			bundle.put(assembledJvmClass);
+			markWorkspaceMutated(workspace);
 			logger.info("Applied assembled method '{}' in class '{}'", methodName, classInfo.getName());
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -319,6 +324,7 @@ public class AssemblerToolProvider extends AbstractToolProvider {
 			JvmClassInfo assembledJvmClass = assembledClass.asJvmClass();
 			JvmClassBundle bundle = workspace.getPrimaryResource().getJvmClassBundle();
 			bundle.put(assembledJvmClass);
+			markWorkspaceMutated(workspace);
 			logger.info("Applied assembled class '{}'", assembledJvmClass.getName());
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -333,6 +339,10 @@ public class AssemblerToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helpers ----
+
+	private void markWorkspaceMutated(Workspace workspace) {
+		revisionTracker.bump(workspace);
+	}
 
 	/**
 	 * Format a list of JASM errors into a single human-readable string.

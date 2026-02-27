@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
@@ -40,14 +41,17 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 
 	private final ResourceImporter resourceImporter;
 	private final AggregateMappingManager aggregateMappingManager;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public WorkspaceToolProvider(McpSyncServer server,
 	                             WorkspaceManager workspaceManager,
 	                             ResourceImporter resourceImporter,
-	                             AggregateMappingManager aggregateMappingManager) {
+	                             AggregateMappingManager aggregateMappingManager,
+	                             WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.resourceImporter = resourceImporter;
 		this.aggregateMappingManager = aggregateMappingManager;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -76,9 +80,12 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 			String path = getString(args, "path");
 			logger.info("Opening workspace from: {}", path);
 
+			Workspace previousWorkspace = workspaceManager.getCurrent();
 			WorkspaceResource resource = importResourceFromPath(path);
 			Workspace workspace = new BasicWorkspace(resource);
 			workspaceManager.setCurrent(workspace);
+			revisionTracker.remove(previousWorkspace);
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "opened");
@@ -99,8 +106,10 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 				.inputSchema(createSchema(Map.of(), List.of()))
 				.build();
 		registerTool(tool, (exchange, args) -> {
-			requireWorkspace();
+			Workspace workspace = requireWorkspace();
 			workspaceManager.closeCurrent();
+			markWorkspaceMutated(workspace);
+			revisionTracker.remove(workspace);
 			return createTextResult("Workspace closed successfully.");
 		});
 	}
@@ -229,6 +238,7 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 
 			WorkspaceResource resource = importResourceFromPath(path);
 			workspace.getSupportingResources().add(resource);
+			markWorkspaceMutated(workspace);
 
 			LinkedHashMap<String, Object> result = new LinkedHashMap<>();
 			result.put("status", "added");
@@ -318,6 +328,10 @@ public class WorkspaceToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helper methods ----
+
+	private void markWorkspaceMutated(Workspace workspace) {
+		revisionTracker.bump(workspace);
+	}
 
 	/**
 	 * Import a resource from the given file path, wrapping checked {@link IOException}

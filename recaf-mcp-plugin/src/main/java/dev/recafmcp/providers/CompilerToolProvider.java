@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.cache.WorkspaceRevisionTracker;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.slf4j.Logger;
@@ -34,14 +35,17 @@ public class CompilerToolProvider extends AbstractToolProvider {
 
 	private final JavacCompiler javacCompiler;
 	private final PhantomGenerator phantomGenerator;
+	private final WorkspaceRevisionTracker revisionTracker;
 
 	public CompilerToolProvider(McpSyncServer server,
 	                            WorkspaceManager workspaceManager,
 	                            JavacCompiler javacCompiler,
-	                            PhantomGenerator phantomGenerator) {
+	                            PhantomGenerator phantomGenerator,
+	                            WorkspaceRevisionTracker revisionTracker) {
 		super(server, workspaceManager);
 		this.javacCompiler = javacCompiler;
 		this.phantomGenerator = phantomGenerator;
+		this.revisionTracker = revisionTracker;
 	}
 
 	@Override
@@ -106,6 +110,7 @@ public class CompilerToolProvider extends AbstractToolProvider {
 				appliedClasses.add(compiledName);
 				logger.info("Applied compiled class: {}", compiledName);
 			}
+			markWorkspaceMutated(workspace);
 
 			result.put("status", "success");
 			result.put("className", className);
@@ -170,6 +175,7 @@ public class CompilerToolProvider extends AbstractToolProvider {
 				GeneratedPhantomWorkspaceResource phantoms =
 						phantomGenerator.createPhantomsForWorkspace(workspace);
 				workspace.addSupportingResource(phantoms);
+				markWorkspaceMutated(workspace);
 
 				int phantomCount = 0;
 				JvmClassBundle phantomBundle = phantoms.getJvmClassBundle();
@@ -190,6 +196,10 @@ public class CompilerToolProvider extends AbstractToolProvider {
 	}
 
 	// ---- Helpers ----
+
+	private void markWorkspaceMutated(Workspace workspace) {
+		revisionTracker.bump(workspace);
+	}
 
 	private CompilerResult compileSource(String internalClassName, String source, Workspace workspace) {
 		var arguments = new JavacArgumentsBuilder()

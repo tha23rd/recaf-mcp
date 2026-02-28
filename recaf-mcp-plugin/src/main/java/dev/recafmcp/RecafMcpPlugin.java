@@ -212,6 +212,14 @@ public class RecafMcpPlugin implements Plugin {
 			searchTools.setToolRegistry(toolRegistry);
 			searchTools.registerTools();
 
+			GroovyScriptingProvider groovyScripting = new GroovyScriptingProvider(
+					mcp, workspaceManager, decompilerManager, searchService,
+					callGraphService, inheritanceGraphService
+			);
+			groovyScripting.setResponseSerializer(serializer);
+			groovyScripting.setToolRegistry(toolRegistry);
+			groovyScripting.registerTools();
+
 			// Register MCP resources
 			new WorkspaceResourceProvider(
 					mcp, workspaceManager, classInventoryCache, revisionTracker
@@ -221,7 +229,7 @@ public class RecafMcpPlugin implements Plugin {
 			).register();
 
 			logger.info("Recaf MCP Server plugin enabled — {} tool providers, {} resource providers",
-					15, 2);
+					16, 2);
 		} catch (Exception e) {
 			logger.error("Failed to start MCP server", e);
 		} finally {

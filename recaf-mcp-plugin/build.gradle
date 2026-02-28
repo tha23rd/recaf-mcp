@@ -111,6 +111,10 @@ dependencies {
     // SSVM's CAFED00D dep uses package me.coley.cafedude (different from Recaf's software.coley.cafedude)
     shade 'com.github.Col-E:CAFED00D:1.10.2'
 
+    // Groovy scripting engine for execute-recaf-script tool.
+    // NOT relocated: Groovy uses class names in metaclass internals.
+    shade 'org.apache.groovy:groovy:4.0.24'
+
     // Test
     testImplementation platform('org.junit:junit-bom:5.11.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'

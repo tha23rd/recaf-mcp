@@ -32,6 +32,7 @@ public abstract class AbstractToolProvider implements ToolProvider {
 	protected final McpSyncServer server;
 	protected final WorkspaceManager workspaceManager;
 	protected ResponseSerializer responseSerializer;
+	private ToolRegistry toolRegistry;
 
 	protected AbstractToolProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
 		this.server = server;
@@ -309,6 +310,13 @@ public abstract class AbstractToolProvider implements ToolProvider {
 					}
 				};
 
+		if (toolRegistry != null) {
+			String category = getClass().getSimpleName()
+					.replace("ToolProvider", "")
+					.replace("Provider", "");
+			toolRegistry.register(tool.name(), tool.description(), category);
+		}
+
 		server.addTool(SyncToolSpecification.builder()
 				.tool(tool)
 				.callHandler(safeHandler)
@@ -323,5 +331,14 @@ public abstract class AbstractToolProvider implements ToolProvider {
 	 */
 	public void setResponseSerializer(ResponseSerializer serializer) {
 		this.responseSerializer = serializer;
+	}
+
+	/**
+	 * Optional in-memory tool registry for meta-discovery tools.
+	 *
+	 * @param toolRegistry Tool registry instance, or {@code null} to disable indexing.
+	 */
+	public void setToolRegistry(ToolRegistry toolRegistry) {
+		this.toolRegistry = toolRegistry;
 	}
 }

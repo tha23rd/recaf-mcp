@@ -1,19 +1,10 @@
 package dev.recafmcp;
 
-import dev.recafmcp.cache.WorkspaceRevisionTracker;
-import dev.recafmcp.cache.CacheConfig;
-import dev.recafmcp.cache.ClassInventoryCache;
-import dev.recafmcp.cache.DecompileCache;
-import dev.recafmcp.cache.InstructionAnalysisCache;
-import dev.recafmcp.cache.SearchQueryCache;
 import dev.recafmcp.providers.*;
-import dev.recafmcp.resources.ClassResourceProvider;
-import dev.recafmcp.resources.WorkspaceResourceProvider;
 import dev.recafmcp.server.JsonResponseSerializer;
 import dev.recafmcp.server.McpServerManager;
 import dev.recafmcp.server.ResponseSerializer;
 import dev.recafmcp.server.ToonResponseSerializer;
-import dev.recafmcp.ssvm.SsvmManager;
 import io.modelcontextprotocol.server.McpSyncServer;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -110,126 +101,10 @@ public class RecafMcpPlugin implements Plugin {
 			// Resolve response format: -Drecaf.mcp.format=toon to enable TOON serialization
 			ResponseSerializer serializer = resolveResponseSerializer();
 			logger.info("Using response format: {}", serializer.formatName());
-			WorkspaceRevisionTracker revisionTracker = new WorkspaceRevisionTracker();
-			CacheConfig cacheConfig = CacheConfig.fromSystemProperties();
-			DecompileCache decompileCache = new DecompileCache(cacheConfig);
-			SearchQueryCache searchQueryCache = new SearchQueryCache(cacheConfig);
-			ClassInventoryCache classInventoryCache = new ClassInventoryCache(cacheConfig);
-			InstructionAnalysisCache instructionAnalysisCache = new InstructionAnalysisCache(cacheConfig);
-
-			// Register all tool providers
-			WorkspaceToolProvider workspace = new WorkspaceToolProvider(
-					mcp, workspaceManager, resourceImporter, mappingManager, revisionTracker
-			);
-			workspace.setResponseSerializer(serializer);
-			workspace.setToolRegistry(toolRegistry);
-			workspace.registerTools();
-
-			NavigationToolProvider nav = new NavigationToolProvider(
-					mcp, workspaceManager, classInventoryCache, revisionTracker
-			);
-			nav.setResponseSerializer(serializer);
-			nav.setToolRegistry(toolRegistry);
-			nav.registerTools();
-
-			DecompilerToolProvider decompiler = new DecompilerToolProvider(
-					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
-			);
-			decompiler.setResponseSerializer(serializer);
-			decompiler.setToolRegistry(toolRegistry);
-			decompiler.registerTools();
-
-			SearchToolProvider search = new SearchToolProvider(
-					mcp, workspaceManager, searchService, decompilerManager,
-					decompileCache, instructionAnalysisCache, searchQueryCache, revisionTracker
-			);
-			search.setResponseSerializer(serializer);
-			search.setToolRegistry(toolRegistry);
-			search.registerTools();
-
-			XRefToolProvider xref = new XRefToolProvider(
-					mcp, workspaceManager, searchService, instructionAnalysisCache, searchQueryCache, revisionTracker
-			);
-			xref.setResponseSerializer(serializer);
-			xref.setToolRegistry(toolRegistry);
-			xref.registerTools();
-
-			CallGraphToolProvider callGraph = new CallGraphToolProvider(mcp, workspaceManager, callGraphService);
-			callGraph.setResponseSerializer(serializer);
-			callGraph.setToolRegistry(toolRegistry);
-			callGraph.registerTools();
-
-			InheritanceToolProvider inheritance = new InheritanceToolProvider(mcp, workspaceManager, inheritanceGraphService);
-			inheritance.setResponseSerializer(serializer);
-			inheritance.setToolRegistry(toolRegistry);
-			inheritance.registerTools();
-
-			MappingToolProvider mapping = new MappingToolProvider(
-					mcp, workspaceManager, mappingApplier, mappingManager, mappingFormatManager, revisionTracker
-			);
-			mapping.setResponseSerializer(serializer);
-			mapping.setToolRegistry(toolRegistry);
-			mapping.registerTools();
-
-			CommentToolProvider comment = new CommentToolProvider(mcp, workspaceManager, commentManager);
-			comment.setResponseSerializer(serializer);
-			comment.setToolRegistry(toolRegistry);
-			comment.registerTools();
-
-			CompilerToolProvider compiler = new CompilerToolProvider(
-					mcp, workspaceManager, javacCompiler, phantomGenerator, revisionTracker
-			);
-			compiler.setResponseSerializer(serializer);
-			compiler.setToolRegistry(toolRegistry);
-			compiler.registerTools();
-
-			AssemblerToolProvider assembler = new AssemblerToolProvider(
-					mcp, workspaceManager, assemblerPipelineManager, revisionTracker
-			);
-			assembler.setResponseSerializer(serializer);
-			assembler.setToolRegistry(toolRegistry);
-			assembler.registerTools();
-
-			TransformToolProvider transform = new TransformToolProvider(
-					mcp, workspaceManager, transformationManager, transformationApplierService, revisionTracker
-			);
-			transform.setResponseSerializer(serializer);
-			transform.setToolRegistry(toolRegistry);
-			transform.registerTools();
-
-			AttachToolProvider attach = new AttachToolProvider(mcp, workspaceManager);
-			attach.setResponseSerializer(serializer);
-			attach.setToolRegistry(toolRegistry);
-			attach.registerTools();
-
-			SsvmManager ssvmManager = new SsvmManager(workspaceManager, findCompatibleJdk());
-			SsvmExecutionProvider ssvmExecution = new SsvmExecutionProvider(mcp, workspaceManager, ssvmManager);
-			ssvmExecution.setResponseSerializer(serializer);
-			ssvmExecution.setToolRegistry(toolRegistry);
-			ssvmExecution.registerTools();
-
-			SearchToolsProvider searchTools = new SearchToolsProvider(mcp, workspaceManager, toolRegistry);
-			searchTools.setToolRegistry(toolRegistry);
-			searchTools.registerTools();
-
-			GroovyScriptingProvider groovyScripting = new GroovyScriptingProvider(
-					mcp, workspaceManager, decompilerManager, searchService,
-					callGraphService, inheritanceGraphService
-			);
-			groovyScripting.setResponseSerializer(serializer);
-			groovyScripting.setToolRegistry(toolRegistry);
-			groovyScripting.registerTools();
-
-			// Register MCP resources
-			new WorkspaceResourceProvider(
-					mcp, workspaceManager, classInventoryCache, revisionTracker
-			).register();
-			new ClassResourceProvider(
-					mcp, workspaceManager, decompilerManager, decompileCache, revisionTracker
-			).register();
+			registerCodeModeProviders(mcp, toolRegistry, serializer);
 
 			logger.info("Recaf MCP Server plugin enabled — {} tool providers, {} resource providers",
-					16, 2);
+					2, 0);
 		} catch (Exception e) {
 			logger.error("Failed to start MCP server", e);
 		} finally {
@@ -258,6 +133,21 @@ public class RecafMcpPlugin implements Plugin {
 			return new JsonResponseSerializer();
 		}
 		return new ToonResponseSerializer();
+	}
+
+	void registerCodeModeProviders(McpSyncServer mcp, ToolRegistry toolRegistry, ResponseSerializer serializer) {
+		SearchToolsProvider searchTools = new SearchToolsProvider(mcp, workspaceManager, toolRegistry);
+		searchTools.setResponseSerializer(serializer);
+		searchTools.setToolRegistry(toolRegistry);
+		searchTools.registerTools();
+
+		GroovyScriptingProvider groovyScripting = new GroovyScriptingProvider(
+				mcp, workspaceManager, decompilerManager, searchService,
+				callGraphService, inheritanceGraphService
+		);
+		groovyScripting.setResponseSerializer(serializer);
+		groovyScripting.setToolRegistry(toolRegistry);
+		groovyScripting.registerTools();
 	}
 
 	/**

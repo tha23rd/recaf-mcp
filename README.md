@@ -163,7 +163,7 @@ For token-efficient agent workflows, use this sequence:
 2. `describe-recaf-api` to retrieve only the API sections needed for scripting
 3. `execute-recaf-script` to combine multiple analysis steps in one roundtrip
 
-Code Mode text outputs for these three tools are size-bounded to 4096 characters (with a deterministic truncation marker) for token efficiency and predictable failure behavior under large responses.
+Code Mode responses are not globally text-truncated. `execute-recaf-script` still enforces timeout and stdout byte caps for stability.
 
 This follows Cloudflare's query-driven Code Mode pattern for MCP tool discovery:
 [https://blog.cloudflare.com/code-mode-mcp/](https://blog.cloudflare.com/code-mode-mcp/)

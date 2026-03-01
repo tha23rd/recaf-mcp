@@ -3,7 +3,6 @@ package dev.recafmcp.providers;
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
 import groovy.transform.ThreadInterrupt;
-import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -117,7 +116,7 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 		registerTool(tool, (exchange, args) -> {
 			String query = getOptionalString(args, "query", "").trim().toLowerCase(Locale.ROOT);
 			if (query.isEmpty()) {
-				return createTextResult(CodeModeOutputTruncator.truncate(apiReferenceText));
+				return createTextResult(apiReferenceText);
 			}
 
 			String[] sections = apiReferenceText.split("(?m)^---\\s*$|(?=^## )", -1);
@@ -134,7 +133,7 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 						"decompile, search, class, workspace, inheritance, callgraph.");
 			}
 
-			return createTextResult(CodeModeOutputTruncator.truncate(String.join("\n\n---\n\n", matched)));
+			return createTextResult(String.join("\n\n---\n\n", matched));
 		});
 	}
 
@@ -221,7 +220,7 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 
 			String output = result.toString().strip();
 			String normalized = output.isEmpty() ? "(script returned null/void)" : output;
-			return createTextResult(CodeModeOutputTruncator.truncate(normalized));
+			return createTextResult(normalized);
 		} catch (Exception e) {
 			logger.debug("Groovy script error", e);
 			String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();

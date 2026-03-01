@@ -1,6 +1,4 @@
 package dev.recafmcp.providers;
-
-import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.McpSyncServerExchange;
@@ -88,7 +86,7 @@ class SearchToolsProviderTest {
 	}
 
 	@Test
-	void emptyQueryLargeRegistryIsTruncated() {
+	void emptyQueryLargeRegistryReturnsFullText() {
 		for (int i = 0; i < 250; i++) {
 			registry.register(
 					"bulk-tool-" + i,
@@ -103,10 +101,10 @@ class SearchToolsProviderTest {
 		CallToolResult result = spec.callHandler().apply(exchange, mockRequest(Map.of("query", "")));
 
 		String text = ((TextContent) result.content().getFirst()).text();
-		assertTrue(text.toLowerCase().contains("truncated"),
-				"Expected truncation marker in large search-tools response, got: " + text);
-		assertTrue(text.length() <= CodeModeOutputTruncator.MAX_OUTPUT_CHARS,
-				"Expected bounded response length");
+		assertFalse(text.toLowerCase().contains("output truncated"),
+				"Did not expect truncation marker in search-tools response");
+		assertTrue(text.contains("bulk-tool-249"),
+				"Expected full large registry payload to include late entries");
 	}
 
 	private CallToolRequest mockRequest(Map<String, Object> args) {

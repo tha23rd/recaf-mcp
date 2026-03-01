@@ -10,6 +10,38 @@ MCP (Model Context Protocol) server plugin for [Recaf](https://github.com/Col-E/
 2. **Start Recaf** — open a JAR/APK/class file, the MCP server starts automatically on `localhost:8085`
 3. **Connect your tool** — point your AI coding assistant at the MCP endpoint
 4. **Start with discovery** — call `search-tools` to find relevant tools before calling task-specific tools
+5. **Optional scripting** — enable `execute-recaf-script` only when needed (disabled by default)
+
+## Starting From Scratch
+
+1. Install Recaf 4.x and Java 22+.
+2. Install the plugin JAR into your Recaf plugins directory.
+3. Launch Recaf (safe default mode):
+
+```bash
+# from recaf-mcp/recaf-mcp-plugin while developing
+./gradlew runRecaf
+```
+
+4. Connect your MCP client to:
+
+```text
+http://localhost:8085/mcp
+```
+
+5. Open your target JAR/APK/class in Recaf.
+6. Call `search-tools` first, then use task-specific tools.
+7. Only if you need Groovy scripting, restart Recaf with explicit opt-in:
+
+```bash
+RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true ./gradlew runRecaf
+```
+
+You can also enable with JVM property:
+
+```bash
+java -Drecaf.mcp.script.execution.enabled=true -jar recaf.jar
+```
 
 ## Prerequisites
 
@@ -145,8 +177,20 @@ For token-efficient agent workflows, use this sequence:
 2. `describe-recaf-api` to retrieve only the API sections needed for scripting
 3. `execute-recaf-script` to combine multiple analysis steps in one roundtrip
 
+Code Mode text outputs are size-bounded to 4096 characters (with a deterministic truncation marker) for token efficiency and predictable failure behavior under large responses.
+
 This follows Cloudflare's query-driven Code Mode pattern for MCP tool discovery:
 [https://blog.cloudflare.com/code-mode-mcp/](https://blog.cloudflare.com/code-mode-mcp/)
+
+## Code Mode Script Security
+
+`execute-recaf-script` is guarded by an explicit runtime policy and is disabled by default.
+
+- Enable script execution only when needed by setting `RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true` or `-Drecaf.mcp.script.execution.enabled=true`.
+- Exposed Groovy bindings are intentionally minimal: `workspace`, `decompilerManager`, `searchService`, `callGraphService`, `inheritanceGraphService`, and `out`.
+- Script execution is time-bounded, stdout is capped, and timeout handling interrupts execution with loop/method interruption checks applied at compile time.
+
+This feature executes user-provided code inside the Recaf JVM. Keep it disabled for untrusted sessions and enable it only for controlled workflows.
 
 ## Resources
 
@@ -163,6 +207,7 @@ This follows Cloudflare's query-driven Code Mode pattern for MCP tool discovery:
 | `RECAF_MCP_HOST` / `-Drecaf.mcp.host` | `127.0.0.1` | Bind address |
 | `RECAF_MCP_PORT` / `-Drecaf.mcp.port` | `8085` | Listen port |
 | `-Drecaf.mcp.format` | `toon` | Response format: `toon` (token-optimized, ~36% smaller) or `json` |
+| `RECAF_MCP_SCRIPT_EXECUTION_ENABLED` / `-Drecaf.mcp.script.execution.enabled` | `false` | Enables `execute-recaf-script` (disabled by default for safety) |
 | `-Drecaf.mcp.cache.enabled` | `true` | Enable/disable plugin-side tool/resource caches |
 | `-Drecaf.mcp.cache.ttl.seconds` | `120` | Cache TTL in seconds for plugin-side caches |
 | `-Drecaf.mcp.cache.max.entries` | `1000` | Maximum entries per plugin-side cache |
@@ -191,7 +236,8 @@ Validated end-to-end using `./gradlew runRecaf` and a real workspace JAR (`SKlau
 - Opened workspace via `workspace-open`
 - Verified `search-tools` discovers both `describe-recaf-api` and `execute-recaf-script`
 - Verified `describe-recaf-api` keyword filtering
-- Verified `execute-recaf-script` execution against live workspace data
+- Verified default policy blocks `execute-recaf-script` with explicit opt-in guidance
+- Verified `execute-recaf-script` succeeds when `RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true`
 - Repeated cache-backed calls (`decompile-class`, `search-strings`) to confirm cache compatibility
 
 ## Building & Development

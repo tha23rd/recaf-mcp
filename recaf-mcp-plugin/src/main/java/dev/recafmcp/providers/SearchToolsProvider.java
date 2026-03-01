@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import software.coley.recaf.services.workspace.WorkspaceManager;
@@ -55,7 +56,7 @@ public class SearchToolsProvider extends AbstractToolProvider {
 				sb.append("- **").append(entry.name()).append("**: ").append(entry.description()).append('\n');
 			}
 
-			return createTextResult(sb.toString());
+			return createTextResult(CodeModeOutputTruncator.truncate(sb.toString()));
 		});
 	}
 }

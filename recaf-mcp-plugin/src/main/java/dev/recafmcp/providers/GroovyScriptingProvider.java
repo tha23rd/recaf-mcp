@@ -2,6 +2,8 @@ package dev.recafmcp.providers;
 
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
+import groovy.transform.ThreadInterrupt;
+import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -26,7 +28,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import org.codehaus.groovy.control.CompilerConfiguration;
+import org.codehaus.groovy.control.customizers.ASTTransformationCustomizer;
 
 /**
  * Groovy script tools for code-mode workflows.
@@ -36,15 +44,21 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	private static final int DEFAULT_TIMEOUT_MS = 5_000;
 	private static final int MAX_TIMEOUT_MS = 30_000;
 	private static final int MAX_OUTPUT_BYTES = 64 * 1024;
+	private static final int SCRIPT_INTERRUPT_GRACE_MS = 250;
+	private static final int EXECUTOR_SHUTDOWN_WAIT_MS = 1_000;
+	private static final AtomicInteger SCRIPT_THREAD_COUNTER = new AtomicInteger();
+	private static final String SCRIPT_EXECUTION_ENABLED_ENV = "RECAF_MCP_SCRIPT_EXECUTION_ENABLED";
+	private static final String SCRIPT_EXECUTION_ENABLED_PROPERTY = "recaf.mcp.script.execution.enabled";
 
 	private final DecompilerManager decompilerManager;
 	private final SearchService searchService;
 	private final CallGraphService callGraphService;
 	private final InheritanceGraphService inheritanceGraphService;
 	private final String apiReferenceText;
+	private final BooleanSupplier scriptExecutionEnabledSupplier;
 
 	public GroovyScriptingProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
-		this(server, workspaceManager, null, null, null, null);
+		this(server, workspaceManager, null, null, null, null, GroovyScriptingProvider::resolveScriptExecutionEnabled);
 	}
 
 	public GroovyScriptingProvider(McpSyncServer server,
@@ -53,11 +67,30 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	                               SearchService searchService,
 	                               CallGraphService callGraphService,
 	                               InheritanceGraphService inheritanceGraphService) {
+		this(server,
+				workspaceManager,
+				decompilerManager,
+				searchService,
+				callGraphService,
+				inheritanceGraphService,
+				GroovyScriptingProvider::resolveScriptExecutionEnabled);
+	}
+
+	GroovyScriptingProvider(McpSyncServer server,
+	                        WorkspaceManager workspaceManager,
+	                        DecompilerManager decompilerManager,
+	                        SearchService searchService,
+	                        CallGraphService callGraphService,
+	                        InheritanceGraphService inheritanceGraphService,
+	                        BooleanSupplier scriptExecutionEnabledSupplier) {
 		super(server, workspaceManager);
 		this.decompilerManager = decompilerManager;
 		this.searchService = searchService;
 		this.callGraphService = callGraphService;
 		this.inheritanceGraphService = inheritanceGraphService;
+		this.scriptExecutionEnabledSupplier = scriptExecutionEnabledSupplier != null ?
+				scriptExecutionEnabledSupplier :
+				() -> false;
 		this.apiReferenceText = loadApiReference();
 	}
 
@@ -84,7 +117,7 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 		registerTool(tool, (exchange, args) -> {
 			String query = getOptionalString(args, "query", "").trim().toLowerCase(Locale.ROOT);
 			if (query.isEmpty()) {
-				return createTextResult(apiReferenceText);
+				return createTextResult(CodeModeOutputTruncator.truncate(apiReferenceText));
 			}
 
 			String[] sections = apiReferenceText.split("(?m)^---\\s*$|(?=^## )", -1);
@@ -101,17 +134,19 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 						"decompile, search, class, workspace, inheritance, callgraph.");
 			}
 
-			return createTextResult(String.join("\n\n---\n\n", matched));
+			return createTextResult(CodeModeOutputTruncator.truncate(String.join("\n\n---\n\n", matched)));
 		});
 	}
 
 	private void registerExecuteRecafScript() {
-		Tool tool = Tool.builder()
-				.name("execute-recaf-script")
-				.description("Execute a Groovy script against the live Recaf workspace. " +
-						"Available bindings include workspace, workspaceManager, decompilerManager, " +
-						"searchService, callGraphService, and inheritanceGraphService. " +
-						"Execution is time bounded and stdout is capped.")
+			Tool tool = Tool.builder()
+					.name("execute-recaf-script")
+					.description("Execute a Groovy script against the live Recaf workspace. " +
+							"Available bindings include workspace, decompilerManager, searchService, " +
+							"callGraphService, and inheritanceGraphService. " +
+							"Execution is disabled by default and must be explicitly enabled via " +
+							SCRIPT_EXECUTION_ENABLED_ENV + "=true or -D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true. " +
+							"Execution is time bounded and stdout is capped.")
 				.inputSchema(createSchema(
 						Map.of(
 								"code", stringParam("Groovy script to execute."),
@@ -129,53 +164,50 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	}
 
 	private CallToolResult executeGroovyScript(String code, int timeoutMs) {
+		if (!isScriptExecutionEnabled()) {
+			return createErrorResult(disabledByPolicyMessage());
+		}
+
 		BoundedByteArrayOutputStream capturedOut = new BoundedByteArrayOutputStream(MAX_OUTPUT_BYTES);
 		try (PrintWriter writer = new PrintWriter(capturedOut, true, StandardCharsets.UTF_8)) {
-			Binding binding = new Binding();
-			binding.setProperty("out", writer);
-			binding.setProperty("workspaceManager", workspaceManager);
-			binding.setProperty("decompilerManager", decompilerManager);
-			binding.setProperty("searchService", searchService);
-			binding.setProperty("callGraphService", callGraphService);
-			binding.setProperty("inheritanceGraphService", inheritanceGraphService);
-			binding.setProperty("workspace", resolveCurrentWorkspace());
-
-			final Thread[] scriptThread = new Thread[1];
+			Binding binding = createScriptBinding(writer);
+			AtomicReference<Thread> scriptThread = new AtomicReference<>();
 			ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-				Thread thread = new Thread(r, "recaf-mcp-groovy-script");
+				Thread thread = new Thread(r, "recaf-mcp-groovy-script-" + SCRIPT_THREAD_COUNTER.incrementAndGet());
 				thread.setDaemon(true);
-				scriptThread[0] = thread;
+				scriptThread.set(thread);
 				return thread;
 			});
 
 			Object returnValue;
+			Future<Object> evaluation = null;
 			try {
-				Future<Object> evaluation = executor.submit(() -> new GroovyShell(binding).evaluate(code));
-				returnValue = evaluation.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+				evaluation = executor.submit(() -> createInterruptibleGroovyShell(binding).evaluate(code));
+				returnValue = evaluation.get(timeoutMs, TimeUnit.MILLISECONDS);
 			} catch (TimeoutException e) {
-				Thread thread = scriptThread[0];
-				if (thread != null) {
-					thread.interrupt();
-				}
-				return createErrorResult("Script timed out after " + timeoutMs + "ms");
+				String timeoutMessage = handleTimeout(timeoutMs, scriptThread.get(), evaluation);
+				return createErrorResult(timeoutMessage);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return createErrorResult("Script execution interrupted while waiting for completion");
 			} catch (ExecutionException e) {
 				Throwable cause = e.getCause() != null ? e.getCause() : e;
 				logger.debug("Groovy script error", cause);
 				return createErrorResult("Script error: " + cause.getMessage());
 			} finally {
-				executor.shutdownNow();
+				shutdownExecutor(executor);
 			}
 
 			String printed = capturedOut.toString(StandardCharsets.UTF_8);
 			StringBuilder result = new StringBuilder();
-			if (!printed.isBlank()) {
-				result.append(printed.strip());
-			}
 			if (capturedOut.isTruncated()) {
+				result.append("[stdout truncated at ").append(MAX_OUTPUT_BYTES).append(" bytes]");
+			}
+			if (!printed.isBlank()) {
 				if (!result.isEmpty()) {
 					result.append('\n');
 				}
-				result.append("[stdout truncated at ").append(MAX_OUTPUT_BYTES).append(" bytes]");
+				result.append(printed.strip());
 			}
 			if (returnValue != null) {
 				String returnText = returnValue.toString();
@@ -188,11 +220,90 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 			}
 
 			String output = result.toString().strip();
-			return createTextResult(output.isEmpty() ? "(script returned null/void)" : output);
+			String normalized = output.isEmpty() ? "(script returned null/void)" : output;
+			return createTextResult(CodeModeOutputTruncator.truncate(normalized));
 		} catch (Exception e) {
 			logger.debug("Groovy script error", e);
 			String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
 			return createErrorResult("Script error: " + message);
+		}
+	}
+
+	private Binding createScriptBinding(PrintWriter writer) {
+		Binding binding = new Binding();
+		binding.setProperty("out", writer);
+		binding.setProperty("workspace", resolveCurrentWorkspace());
+		if (decompilerManager != null) {
+			binding.setProperty("decompilerManager", decompilerManager);
+		}
+		if (searchService != null) {
+			binding.setProperty("searchService", searchService);
+		}
+		if (callGraphService != null) {
+			binding.setProperty("callGraphService", callGraphService);
+		}
+		if (inheritanceGraphService != null) {
+			binding.setProperty("inheritanceGraphService", inheritanceGraphService);
+		}
+		return binding;
+	}
+
+	private boolean isScriptExecutionEnabled() {
+		try {
+			return scriptExecutionEnabledSupplier.getAsBoolean();
+		} catch (RuntimeException e) {
+			logger.warn("Failed to resolve script execution policy, defaulting to disabled", e);
+			return false;
+		}
+	}
+
+	private static String disabledByPolicyMessage() {
+		return "Script execution is disabled by policy. " +
+				"To enable it explicitly, set " + SCRIPT_EXECUTION_ENABLED_ENV + "=true " +
+				"or JVM property -D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true.";
+	}
+
+	private String handleTimeout(int timeoutMs, Thread scriptThread, Future<?> evaluation) {
+		if (evaluation != null) {
+			evaluation.cancel(true);
+		}
+		if (scriptThread == null) {
+			return "Script timed out after " + timeoutMs + "ms and interruption was requested.";
+		}
+
+		scriptThread.interrupt();
+		if (waitForThreadExit(scriptThread, SCRIPT_INTERRUPT_GRACE_MS)) {
+			return "Script timed out after " + timeoutMs + "ms and was interrupted.";
+		}
+
+		return "Script timed out after " + timeoutMs + "ms and could not be terminated cleanly. " +
+				"Execution remains blocked by policy until explicitly enabled.";
+	}
+
+	private static GroovyShell createInterruptibleGroovyShell(Binding binding) {
+		CompilerConfiguration config = new CompilerConfiguration();
+		config.addCompilationCustomizers(new ASTTransformationCustomizer(ThreadInterrupt.class));
+		return new GroovyShell(GroovyScriptingProvider.class.getClassLoader(), binding, config);
+	}
+
+	private static boolean waitForThreadExit(Thread thread, long waitMs) {
+		try {
+			thread.join(waitMs);
+			return !thread.isAlive();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			return !thread.isAlive();
+		}
+	}
+
+	private static void shutdownExecutor(ExecutorService executor) {
+		executor.shutdownNow();
+		try {
+			if (!executor.awaitTermination(EXECUTOR_SHUTDOWN_WAIT_MS, TimeUnit.MILLISECONDS)) {
+				logger.warn("Timed out waiting for Groovy script executor shutdown");
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -201,6 +312,20 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 			return null;
 		}
 		return workspaceManager.getCurrent();
+	}
+
+	static boolean resolveScriptExecutionEnabled() {
+		String env = System.getenv(SCRIPT_EXECUTION_ENABLED_ENV);
+		if (env != null && !env.isBlank()) {
+			return Boolean.parseBoolean(env);
+		}
+
+		String prop = System.getProperty(SCRIPT_EXECUTION_ENABLED_PROPERTY);
+		if (prop != null && !prop.isBlank()) {
+			return Boolean.parseBoolean(prop);
+		}
+
+		return false;
 	}
 
 	private static String loadApiReference() {

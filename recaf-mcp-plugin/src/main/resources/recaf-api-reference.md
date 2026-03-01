@@ -3,6 +3,11 @@
 Scripts run in a Groovy shell with the following variables pre-bound.
 Return a value (or set `result`) to produce output from the tool.
 
+`execute-recaf-script` is disabled by default. Enable explicitly with:
+
+- `RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true`, or
+- `-Drecaf.mcp.script.execution.enabled=true`
+
 ---
 
 ## Workspace and Classes
@@ -116,17 +121,6 @@ v.getParents()            // Set<InheritanceVertex> direct parents
 v.getChildren()           // Set<InheritanceVertex> direct children
 v.getAllParents()         // Set<InheritanceVertex> all ancestors
 v.getAllChildren()        // Set<InheritanceVertex> all descendants
-```
-
----
-
-## Workspace Manager
-
-Variable: `workspaceManager` (`software.coley.recaf.services.workspace.WorkspaceManager`)
-
-```groovy
-workspaceManager.getCurrent()                // Workspace (current)
-workspaceManager.hasCurrentWorkspace()       // boolean
 ```
 
 ---

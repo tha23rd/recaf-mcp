@@ -1,5 +1,6 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.McpSyncServerExchange;
@@ -12,7 +13,9 @@ import org.mockito.ArgumentCaptor;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,6 +26,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class GroovyScriptingProviderTest {
+	private static final String SCRIPT_THREAD_PREFIX = "recaf-mcp-groovy-script-";
+
 	private McpSyncServer mockServer;
 	private WorkspaceManager mockWorkspaceManager;
 	private GroovyScriptingProvider provider;
@@ -31,7 +36,19 @@ class GroovyScriptingProviderTest {
 	void setUp() {
 		mockServer = mock(McpSyncServer.class);
 		mockWorkspaceManager = mock(WorkspaceManager.class);
-		provider = new GroovyScriptingProvider(mockServer, mockWorkspaceManager);
+		provider = createProvider(false);
+	}
+
+	private GroovyScriptingProvider createProvider(boolean scriptExecutionEnabled) {
+		return new GroovyScriptingProvider(
+				mockServer,
+				mockWorkspaceManager,
+				null,
+				null,
+				null,
+				null,
+				() -> scriptExecutionEnabled
+		);
 	}
 
 	private Map<String, SyncToolSpecification> captureTools() {
@@ -57,7 +74,18 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
-	void executeSimpleArithmeticScript() {
+	void executeScriptBlockedByPolicyByDefault() {
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", "return 2 + 2"));
+
+		assertTrue(Boolean.TRUE.equals(result.isError()), "Disabled-by-default policy should return an error");
+		assertTrue(text(result).toLowerCase(Locale.ROOT).contains("disabled by policy"));
+		assertTrue(text(result).contains("recaf.mcp.script.execution.enabled"));
+	}
+
+	@Test
+	void executeSimpleArithmeticScriptWhenEnabled() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", "return 2 + 2"));
 
@@ -67,6 +95,7 @@ class GroovyScriptingProviderTest {
 
 	@Test
 	void executeScriptWithPrintln() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
 				Map.of("code", "println 'hello world'\nreturn 'done'"));
@@ -77,6 +106,7 @@ class GroovyScriptingProviderTest {
 
 	@Test
 	void executeSyntaxErrorReturnsErrorResult() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", "def unclosed = {"));
 
@@ -86,6 +116,7 @@ class GroovyScriptingProviderTest {
 
 	@Test
 	void executeRuntimeExceptionReturnsErrorResult() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
 				Map.of("code", "def x = 1 / 0"));
@@ -98,17 +129,24 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
-	void executeLongRunningScriptTimesOut() {
+	void executeLongRunningScriptTimesOutAndIsInterrupted() throws InterruptedException {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
+		long baselineThreadCount = activeScriptThreadCount();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
 				Map.of("code", "while(true) { }", "timeoutMs", 100));
 
 		assertTrue(Boolean.TRUE.equals(result.isError()));
-		assertTrue(text(result).toLowerCase().contains("timed out"));
+		String message = text(result).toLowerCase(Locale.ROOT);
+		assertTrue(message.contains("timed out"));
+		assertTrue(message.contains("interrupted") || message.contains("terminated"));
+		awaitScriptThreadCount(baselineThreadCount, TimeUnit.SECONDS.toMillis(2));
+		assertEquals(baselineThreadCount, activeScriptThreadCount(), "Timed out script thread should terminate");
 	}
 
 	@Test
 	void executeScriptOutputIsCapped() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
 				Map.of("code", "for (int i=0; i<100000; i++) { print('x') }\nreturn 'done'"));
@@ -118,13 +156,29 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
-	void executeScriptCanAccessWorkspaceManagerBinding() {
+	void executeLargeReturnValueIsTruncated() {
+		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
-				Map.of("code", "return workspaceManager != null ? 'bound' : 'unbound'"));
+				Map.of("code", "return 'x' * 70000"));
 
 		assertFalse(Boolean.TRUE.equals(result.isError()));
-		assertEquals("bound", text(result).trim());
+		String output = text(result);
+		assertTrue(output.toLowerCase(Locale.ROOT).contains("truncated"),
+				"Expected truncation marker for large return value: " + output);
+		assertTrue(output.length() <= CodeModeOutputTruncator.MAX_OUTPUT_CHARS,
+				"Expected bounded output length");
+	}
+
+	@Test
+	void executeScriptDoesNotExposeWorkspaceManagerBinding() {
+		provider = createProvider(true);
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("execute-recaf-script"),
+				Map.of("code", "return workspaceManager"));
+
+		assertTrue(Boolean.TRUE.equals(result.isError()));
+		assertTrue(text(result).contains("workspaceManager"));
 	}
 
 	@Test
@@ -146,6 +200,19 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
+	void describeApiEmptyQueryIsTruncatedWhenOverLimit() {
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("describe-recaf-api"), Map.of("query", ""));
+
+		assertFalse(Boolean.TRUE.equals(result.isError()));
+		String output = text(result);
+		assertTrue(output.toLowerCase(Locale.ROOT).contains("truncated"),
+				"Expected truncation marker in full API reference response");
+		assertTrue(output.length() <= CodeModeOutputTruncator.MAX_OUTPUT_CHARS,
+				"Expected bounded output length");
+	}
+
+	@Test
 	void describeApiNoMatchReturnsHelpMessage() {
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("describe-recaf-api"),
@@ -155,5 +222,24 @@ class GroovyScriptingProviderTest {
 		String out = text(result);
 		assertTrue(out.contains("No sections") || out.contains("not found") || out.contains("empty query"),
 				"Expected not-found message: " + out);
+	}
+
+	private static long activeScriptThreadCount() {
+		return Thread.getAllStackTraces()
+				.keySet()
+				.stream()
+				.filter(Thread::isAlive)
+				.filter(thread -> thread.getName().startsWith(SCRIPT_THREAD_PREFIX))
+				.count();
+	}
+
+	private static void awaitScriptThreadCount(long expectedCount, long timeoutMs) throws InterruptedException {
+		long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+		while (System.nanoTime() < deadlineNanos) {
+			if (activeScriptThreadCount() <= expectedCount) {
+				return;
+			}
+			Thread.sleep(25);
+		}
 	}
 }

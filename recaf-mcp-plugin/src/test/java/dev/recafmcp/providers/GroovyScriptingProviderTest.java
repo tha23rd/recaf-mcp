@@ -1,6 +1,5 @@
 package dev.recafmcp.providers;
 
-import dev.recafmcp.server.CodeModeOutputTruncator;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.McpSyncServerExchange;
@@ -156,7 +155,7 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
-	void executeLargeReturnValueIsTruncated() {
+	void executeLargeReturnValueIsNotGloballyTruncated() {
 		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("execute-recaf-script"),
@@ -164,10 +163,9 @@ class GroovyScriptingProviderTest {
 
 		assertFalse(Boolean.TRUE.equals(result.isError()));
 		String output = text(result);
-		assertTrue(output.toLowerCase(Locale.ROOT).contains("truncated"),
-				"Expected truncation marker for large return value: " + output);
-		assertTrue(output.length() <= CodeModeOutputTruncator.MAX_OUTPUT_CHARS,
-				"Expected bounded output length");
+		assertFalse(output.toLowerCase(Locale.ROOT).contains("output truncated"),
+				"Did not expect shared truncation marker for large return value");
+		assertEquals(70000, output.length(), "Expected full return value output");
 	}
 
 	@Test
@@ -200,16 +198,16 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
-	void describeApiEmptyQueryIsTruncatedWhenOverLimit() {
+	void describeApiEmptyQueryReturnsFullReferenceWithoutGlobalTruncation() {
 		Map<String, SyncToolSpecification> tools = captureTools();
 		CallToolResult result = callTool(tools.get("describe-recaf-api"), Map.of("query", ""));
 
 		assertFalse(Boolean.TRUE.equals(result.isError()));
 		String output = text(result);
-		assertTrue(output.toLowerCase(Locale.ROOT).contains("truncated"),
-				"Expected truncation marker in full API reference response");
-		assertTrue(output.length() <= CodeModeOutputTruncator.MAX_OUTPUT_CHARS,
-				"Expected bounded output length");
+		assertFalse(output.toLowerCase(Locale.ROOT).contains("output truncated"),
+				"Did not expect global truncation marker in API reference response");
+		assertTrue(output.length() > 4096,
+				"Expected full API reference output length over prior truncation threshold");
 	}
 
 	@Test

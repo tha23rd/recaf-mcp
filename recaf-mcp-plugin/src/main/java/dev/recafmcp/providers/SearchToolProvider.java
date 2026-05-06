@@ -32,7 +32,7 @@ import software.coley.recaf.services.search.result.Result;
 import software.coley.recaf.services.search.result.Results;
 import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.path.ClassMemberPathNode;
-import software.coley.recaf.path.InstructionPathNode;
+import software.coley.recaf.path.JvmInstructionPathNode;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.workspace.model.Workspace;
 
@@ -530,7 +530,7 @@ public class SearchToolProvider extends AbstractToolProvider {
 				item.put("className", className);
 
 				// Extract method info from ClassMemberPathNode
-				if (path instanceof InstructionPathNode instrNode) {
+				if (path instanceof JvmInstructionPathNode instrNode) {
 					item.put("instructionIndex", instrNode.getInstructionIndex());
 					ClassMemberPathNode memberNode = instrNode.getParent();
 					if (memberNode != null) {
@@ -539,8 +539,8 @@ public class SearchToolProvider extends AbstractToolProvider {
 						item.put("methodDescriptor", member.getDescriptor());
 					}
 				} else {
-					// Check parent chain for InstructionPathNode
-					InstructionPathNode instrFromPath = path.getPathOfType(
+					// Check parent chain for JvmInstructionPathNode
+					JvmInstructionPathNode instrFromPath = path.getPathOfType(
 							org.objectweb.asm.tree.AbstractInsnNode.class);
 					if (instrFromPath != null) {
 						item.put("instructionIndex", instrFromPath.getInstructionIndex());

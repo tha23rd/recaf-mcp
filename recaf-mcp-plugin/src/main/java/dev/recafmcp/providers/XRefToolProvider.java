@@ -16,7 +16,7 @@ import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.path.ClassPathNode;
-import software.coley.recaf.path.InstructionPathNode;
+import software.coley.recaf.path.JvmInstructionPathNode;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.match.StringPredicate;
@@ -340,7 +340,7 @@ public class XRefToolProvider extends AbstractToolProvider {
 				}
 
 				// Extract instruction index if available
-				InstructionPathNode instrNode = path.getPathOfType(AbstractInsnNode.class);
+				JvmInstructionPathNode instrNode = path.getPathOfType(AbstractInsnNode.class);
 				if (instrNode != null) {
 					entry.put("instructionIndex", instrNode.getInstructionIndex());
 				}

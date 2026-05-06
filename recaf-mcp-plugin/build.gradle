@@ -9,7 +9,7 @@ version = '0.1.1'
 
 ext {
     // Recaf snapshot version (commit hash from JitPack)
-    recafVersion = 'd07958a5c7'
+    recafVersion = '34802966f9'
     recafSnapshots = true
 
     pluginMainClass = 'dev.recafmcp.RecafMcpPlugin'

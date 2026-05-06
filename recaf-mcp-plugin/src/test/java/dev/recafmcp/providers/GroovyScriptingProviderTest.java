@@ -78,8 +78,37 @@ class GroovyScriptingProviderTest {
 		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", "return 2 + 2"));
 
 		assertTrue(Boolean.TRUE.equals(result.isError()), "Disabled-by-default policy should return an error");
-		assertTrue(text(result).toLowerCase(Locale.ROOT).contains("disabled by policy"));
-		assertTrue(text(result).contains("recaf.mcp.script.execution.enabled"));
+		String body = text(result);
+		assertTrue(body.toLowerCase(Locale.ROOT).contains("disabled by policy"));
+		assertTrue(body.contains("recaf.mcp.script.execution.enabled"));
+		assertTrue(body.contains("RECAF_MCP_SCRIPT_EXECUTION_ENABLED"));
+	}
+
+	@Test
+	void disabledErrorIncludesStructuredJsonPayload() {
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", "return 1"));
+
+		String body = text(result);
+		// Embedded JSON allows agents to parse enablement instructions deterministically.
+		assertTrue(body.contains("\"disabled\":true"), "Expected structured disabled flag in: " + body);
+		assertTrue(body.contains("\"enable_via\":["), "Expected enable_via array in: " + body);
+		assertTrue(body.contains("env:RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true"));
+		assertTrue(body.contains("jvm:-Drecaf.mcp.script.execution.enabled=true"));
+		assertTrue(body.contains("Recaf JVM"), "Should clarify the env var goes on Recaf, not MCP client");
+	}
+
+	@Test
+	void executeScriptToolDescriptionDocumentsEnablementFlags() {
+		Map<String, SyncToolSpecification> tools = captureTools();
+		String description = tools.get("execute-recaf-script").tool().description();
+
+		assertTrue(description.contains("RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true"),
+				"Tool description must surface env var: " + description);
+		assertTrue(description.contains("-Drecaf.mcp.script.execution.enabled=true"),
+				"Tool description must surface JVM property: " + description);
+		assertTrue(description.toLowerCase(Locale.ROOT).contains("disabled by default"),
+				"Tool description must call out disabled-by-default policy: " + description);
 	}
 
 	@Test

@@ -1,5 +1,7 @@
 package dev.recafmcp.providers;
 
+import dev.recafmcp.ssvm.SsvmManager;
+import dev.recafmcp.ssvm.SsvmScriptFacade;
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
 import groovy.transform.ThreadInterrupt;
@@ -53,11 +55,13 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	private final SearchService searchService;
 	private final CallGraphService callGraphService;
 	private final InheritanceGraphService inheritanceGraphService;
+	private final SsvmManager ssvmManager;
 	private final String apiReferenceText;
 	private final BooleanSupplier scriptExecutionEnabledSupplier;
 
 	public GroovyScriptingProvider(McpSyncServer server, WorkspaceManager workspaceManager) {
-		this(server, workspaceManager, null, null, null, null, GroovyScriptingProvider::resolveScriptExecutionEnabled);
+		this(server, workspaceManager, null, null, null, null, null,
+				GroovyScriptingProvider::resolveScriptExecutionEnabled);
 	}
 
 	public GroovyScriptingProvider(McpSyncServer server,
@@ -72,6 +76,24 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 				searchService,
 				callGraphService,
 				inheritanceGraphService,
+				null,
+				GroovyScriptingProvider::resolveScriptExecutionEnabled);
+	}
+
+	public GroovyScriptingProvider(McpSyncServer server,
+	                               WorkspaceManager workspaceManager,
+	                               DecompilerManager decompilerManager,
+	                               SearchService searchService,
+	                               CallGraphService callGraphService,
+	                               InheritanceGraphService inheritanceGraphService,
+	                               SsvmManager ssvmManager) {
+		this(server,
+				workspaceManager,
+				decompilerManager,
+				searchService,
+				callGraphService,
+				inheritanceGraphService,
+				ssvmManager,
 				GroovyScriptingProvider::resolveScriptExecutionEnabled);
 	}
 
@@ -81,12 +103,14 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	                        SearchService searchService,
 	                        CallGraphService callGraphService,
 	                        InheritanceGraphService inheritanceGraphService,
+	                        SsvmManager ssvmManager,
 	                        BooleanSupplier scriptExecutionEnabledSupplier) {
 		super(server, workspaceManager);
 		this.decompilerManager = decompilerManager;
 		this.searchService = searchService;
 		this.callGraphService = callGraphService;
 		this.inheritanceGraphService = inheritanceGraphService;
+		this.ssvmManager = ssvmManager;
 		this.scriptExecutionEnabledSupplier = scriptExecutionEnabledSupplier != null ?
 				scriptExecutionEnabledSupplier :
 				() -> false;
@@ -242,6 +266,14 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 		}
 		if (callGraphService != null) {
 			binding.setProperty("callGraphService", callGraphService);
+		}
+		if (ssvmManager != null) {
+			// vmService is the Groovy-side facade over SsvmManager (recaf-mcp-aox).
+			// Construction is cheap (no SSVM bootstrap until first invokeStatic/getStaticField);
+			// real failures (no JDK 11-17, native-method whack-a-mole, missing class) surface
+			// as IllegalStateException / IllegalArgumentException with actionable messages
+			// inside script execution rather than hiding behind a missing binding.
+			binding.setProperty("vmService", new SsvmScriptFacade(ssvmManager));
 		}
 		if (inheritanceGraphService != null) {
 			binding.setProperty("inheritanceGraphService", inheritanceGraphService);

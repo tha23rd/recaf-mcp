@@ -5,6 +5,7 @@ import dev.recafmcp.server.JsonResponseSerializer;
 import dev.recafmcp.server.McpServerManager;
 import dev.recafmcp.server.ResponseSerializer;
 import dev.recafmcp.server.ToonResponseSerializer;
+import dev.recafmcp.ssvm.SsvmManager;
 import io.modelcontextprotocol.server.McpSyncServer;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
@@ -141,9 +142,23 @@ public class RecafMcpPlugin implements Plugin {
 		searchTools.setToolRegistry(toolRegistry);
 		searchTools.registerTools();
 
+		// Construct SsvmManager so execute-recaf-script can expose the vmService binding
+		// (recaf-mcp-aox). SsvmManager is lazy: bootstrap (~2-10s, requires JDK 11-17 boot
+		// classes) only happens on the first vmService.invokeStatic / getStaticField call,
+		// so this is cheap if scripts never touch SSVM. If no compatible JDK is found the
+		// manager is still created — SSVM operations just fail with an actionable error
+		// when a script tries to use them.
+		SsvmManager ssvmManager;
+		try {
+			ssvmManager = new SsvmManager(workspaceManager, findCompatibleJdk());
+		} catch (RuntimeException e) {
+			logger.warn("Failed to construct SsvmManager; vmService binding will be unavailable", e);
+			ssvmManager = null;
+		}
+
 		GroovyScriptingProvider groovyScripting = new GroovyScriptingProvider(
 				mcp, workspaceManager, decompilerManager, searchService,
-				callGraphService, inheritanceGraphService
+				callGraphService, inheritanceGraphService, ssvmManager
 		);
 		groovyScripting.setResponseSerializer(serializer);
 		groovyScripting.setToolRegistry(toolRegistry);

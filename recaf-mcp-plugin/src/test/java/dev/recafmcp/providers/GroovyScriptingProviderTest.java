@@ -39,6 +39,11 @@ class GroovyScriptingProviderTest {
 	}
 
 	private GroovyScriptingProvider createProvider(boolean scriptExecutionEnabled) {
+		return createProvider(scriptExecutionEnabled, null);
+	}
+
+	private GroovyScriptingProvider createProvider(boolean scriptExecutionEnabled,
+	                                               dev.recafmcp.ssvm.SsvmManager ssvmManager) {
 		return new GroovyScriptingProvider(
 				mockServer,
 				mockWorkspaceManager,
@@ -46,6 +51,7 @@ class GroovyScriptingProviderTest {
 				null,
 				null,
 				null,
+				ssvmManager,
 				() -> scriptExecutionEnabled
 		);
 	}
@@ -266,6 +272,39 @@ class GroovyScriptingProviderTest {
 		assertFalse(Boolean.TRUE.equals(result.isError()),
 				"FileOutputStream + closure should compile under Groovy 5.x. Got: " + text(result));
 		assertEquals("hello jdk25", text(result).trim());
+	}
+
+	@Test
+	void vmServiceBindingIsAbsentWhenNoSsvmManager() {
+		// recaf-mcp-aox: when no SsvmManager is wired in (running on JDK 18+ with no boot JDK,
+		// or workspace not yet initialized) scripts must NOT see a phantom vmService binding —
+		// they should get a MissingPropertyException so the failure mode is visible.
+		provider = createProvider(true, null);
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("execute-recaf-script"),
+				Map.of("code", "return vmService"));
+
+		assertTrue(Boolean.TRUE.equals(result.isError()),
+				"vmService must be absent when no SsvmManager wired in");
+		assertTrue(text(result).contains("vmService"),
+				"Error must mention the missing binding name: " + text(result));
+	}
+
+	@Test
+	void vmServiceBindingPresentWhenSsvmManagerProvided() {
+		// recaf-mcp-aox: with an SsvmManager available, vmService is exposed as an
+		// SsvmScriptFacade. This test does NOT bootstrap SSVM (slow) — it only verifies
+		// the binding wiring; SsvmScriptFacadeIntegrationTest covers the real round-trip.
+		dev.recafmcp.ssvm.SsvmManager fakeManager =
+				mock(dev.recafmcp.ssvm.SsvmManager.class);
+		provider = createProvider(true, fakeManager);
+		Map<String, SyncToolSpecification> tools = captureTools();
+		CallToolResult result = callTool(tools.get("execute-recaf-script"),
+				Map.of("code", "return vmService.getClass().getSimpleName()"));
+
+		assertFalse(Boolean.TRUE.equals(result.isError()),
+				"vmService should be exposed as a binding: " + text(result));
+		assertEquals("SsvmScriptFacade", text(result).trim());
 	}
 
 	@Test

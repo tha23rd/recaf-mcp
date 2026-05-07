@@ -125,6 +125,47 @@ v.getAllChildren()        // Set<InheritanceVertex> all descendants
 
 ---
 
+## SSVM (vmService)
+
+Variable: `vmService` (`dev.recafmcp.ssvm.SsvmScriptFacade`) — a thin Groovy-friendly facade
+over the sandboxed Static Virtual Machine. Lets you invoke obfuscated decryptors and read
+their decoded outputs without running the whole jar. Bootstrap is lazy (~2-10s on first
+call) and requires JDK 11-22 boot classes on the host (set `SSVM_BOOT_JDK=/path/to/jdk`
+on the Recaf JVM if running under JDK 23+). Binding is absent if no compatible JDK.
+
+```groovy
+// Invoke a static method by descriptor. Primitive args coerce from boxed values; null
+// is only valid for reference slots. Returns the boxed primitive, a String for
+// java.lang.String returns, or the raw ObjectValue for other refs.
+def sum = vmService.invokeStatic("com/foo/Math", "add", "(II)I", 7, 35)        // -> 42
+def msg = vmService.invokeStatic("com/foo/Decryptor", "decrypt",
+                                 "(Ljava/lang/String;)Ljava/lang/String;", "ciphertext")
+
+// Read / write static fields. Descriptor optional unless the class has same-named
+// fields with different types (rare).
+def k = vmService.getStaticField("com/foo/Decryptor", "key")                  // -> Number
+vmService.setStaticField("com/foo/Decryptor", "key", 0xCAFEBABE)
+vmService.setStaticField("com/foo/Decryptor", "tag", "Ljava/lang/String;", "x")
+
+// Force <clinit> on a class (useful before reading lazily-initialized statics).
+vmService.runClinit("com/foo/Decryptor")
+
+// Drain captured stdout/stderr from anything the VM printed.
+def out = vmService.drainStdout()
+
+// Power-user escape hatches: drop down to the raw SSVM API.
+def vm    = vmService.vm()             // dev.xdark.ssvm.VirtualMachine
+def util  = vmService.invocationUtil() // for invokeVirtual / array args / non-static
+def ops   = vmService.operations()     // VMOperations: arrays, allocations, etc.
+def cls   = vmService.findClass("com/foo/Decryptor")  // InstanceClass
+```
+
+Failures throw `IllegalArgumentException` (bad descriptor / missing class / missing
+member / wrong arg count) or `IllegalStateException` (SSVM unavailable on this JVM).
+The script-execution wrapper surfaces the message in the tool result.
+
+---
+
 ## Utility Examples
 
 ```groovy

@@ -141,11 +141,13 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 			Tool tool = Tool.builder()
 					.name("execute-recaf-script")
 					.description("Execute a Groovy script against the live Recaf workspace. " +
-							"Available bindings include workspace, decompilerManager, searchService, " +
-							"callGraphService, and inheritanceGraphService. " +
-							"Execution is disabled by default and must be explicitly enabled via " +
-							SCRIPT_EXECUTION_ENABLED_ENV + "=true or -D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true. " +
-							"Execution is time bounded and stdout is capped.")
+							"DISABLED BY DEFAULT — enable on the Recaf JVM (not the MCP client) by setting " +
+							"env var " + SCRIPT_EXECUTION_ENABLED_ENV + "=true OR JVM property " +
+							"-D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true before launching Recaf. " +
+							"Available bindings: workspace, decompilerManager, searchService, " +
+							"callGraphService, inheritanceGraphService. " +
+							"Execution is time bounded (default 5000ms, max 30000ms) and stdout is capped. " +
+							"When disabled, the tool returns a structured error containing the exact enable_via instructions.")
 				.inputSchema(createSchema(
 						Map.of(
 								"code", stringParam("Groovy script to execute."),
@@ -257,9 +259,20 @@ public class GroovyScriptingProvider extends AbstractToolProvider {
 	}
 
 	private static String disabledByPolicyMessage() {
-		return "Script execution is disabled by policy. " +
-				"To enable it explicitly, set " + SCRIPT_EXECUTION_ENABLED_ENV + "=true " +
-				"or JVM property -D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true.";
+		// Both human-readable and machine-parseable. The trailing JSON object lets agents
+		// (which often only forward the error text upstream) immediately surface the exact
+		// enablement vector without re-prompting or guessing.
+		return "Script execution is disabled by policy on the Recaf JVM. " +
+				"Enable it by setting env " + SCRIPT_EXECUTION_ENABLED_ENV + "=true " +
+				"OR JVM property -D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true " +
+				"before launching Recaf (this is set on the Recaf process, not the MCP client). " +
+				"{\"disabled\":true," +
+				"\"enable_via\":[" +
+				"\"env:" + SCRIPT_EXECUTION_ENABLED_ENV + "=true\"," +
+				"\"jvm:-D" + SCRIPT_EXECUTION_ENABLED_PROPERTY + "=true\"" +
+				"]," +
+				"\"scope\":\"Recaf JVM (not MCP client)\"," +
+				"\"docs\":\"README.md > Script Execution\"}";
 	}
 
 	private String handleTimeout(int timeoutMs, Thread scriptThread, Future<?> evaluation) {

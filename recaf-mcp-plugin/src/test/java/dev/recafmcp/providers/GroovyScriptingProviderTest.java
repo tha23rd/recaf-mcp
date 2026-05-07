@@ -198,6 +198,77 @@ class GroovyScriptingProviderTest {
 	}
 
 	@Test
+	void executeJdk25StdlibFeaturesUnderGroovy5() {
+		// Regression test for recaf-mcp-pxl: under Groovy 4.0.24 the bundled
+		// groovyjarjarasm could not read JDK 25 stdlib classes (class major 69),
+		// so semantic analysis blew up the moment a script touched closures over
+		// streams, lambdas, anonymous Predicate, FileOutputStream, TimeUnit, or
+		// Math.min/max. Groovy 5.0.x ships a newer ASM that handles major 69, so
+		// these scripts must now compile and run cleanly.
+		provider = createProvider(true);
+		Map<String, SyncToolSpecification> tools = captureTools();
+
+		String script = String.join("\n",
+				"import java.util.concurrent.TimeUnit",
+				"import java.util.function.Predicate",
+				"import java.util.stream.Collectors",
+				"def numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]",
+				// closure + stream + lambda — historically broke under JDK 25
+				"def evens = numbers.stream().filter({ n -> n % 2 == 0 }).collect(Collectors.toList())",
+				// anonymous Predicate via java.util.function — historically broke under JDK 25
+				"Predicate<Integer> bigEnough = new Predicate<Integer>() {",
+				"    boolean test(Integer i) { return i >= 4 }",
+				"}",
+				"def filtered = evens.findAll { bigEnough.test(it) }",
+				// Math.min/max + TimeUnit — historically broke under JDK 25
+				"def smallest = Math.min(filtered[0], filtered[-1])",
+				"def biggest = Math.max(filtered[0], filtered[-1])",
+				"def micros = TimeUnit.SECONDS.toMicros(1L)",
+				"return \"evens=${evens} filtered=${filtered} min=${smallest} max=${biggest} micros=${micros}\""
+		);
+
+		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", script));
+
+		assertFalse(Boolean.TRUE.equals(result.isError()),
+				"JDK 25 stdlib features should run on Groovy 5.x. Got: " + text(result));
+		String body = text(result);
+		assertTrue(body.contains("evens=[2, 4, 6, 8, 10]"), "stream filter result missing: " + body);
+		assertTrue(body.contains("filtered=[4, 6, 8, 10]"), "Predicate filter result missing: " + body);
+		assertTrue(body.contains("min=4"), "Math.min result missing: " + body);
+		assertTrue(body.contains("max=10"), "Math.max result missing: " + body);
+		assertTrue(body.contains("micros=1000000"), "TimeUnit conversion missing: " + body);
+	}
+
+	@Test
+	void executeFileIoUnderJdk25() {
+		// Companion regression for recaf-mcp-pxl: FileOutputStream / FileWriter
+		// are common targets in RE workflows (dumping bytecode, writing reports).
+		// Under Groovy 4.0.24 + JDK 25 these throw "Unsupported class file major
+		// version 69" during semantic analysis. Groovy 5.x must compile them.
+		provider = createProvider(true);
+		Map<String, SyncToolSpecification> tools = captureTools();
+
+		String script = String.join("\n",
+				"import java.nio.file.Files",
+				"def tmp = Files.createTempFile('recaf-mcp-pxl', '.txt')",
+				"try {",
+				"    new FileOutputStream(tmp.toFile()).withCloseable { fos ->",
+				"        fos.write('hello jdk25'.getBytes('UTF-8'))",
+				"    }",
+				"    return new String(Files.readAllBytes(tmp), 'UTF-8')",
+				"} finally {",
+				"    Files.deleteIfExists(tmp)",
+				"}"
+		);
+
+		CallToolResult result = callTool(tools.get("execute-recaf-script"), Map.of("code", script));
+
+		assertFalse(Boolean.TRUE.equals(result.isError()),
+				"FileOutputStream + closure should compile under Groovy 5.x. Got: " + text(result));
+		assertEquals("hello jdk25", text(result).trim());
+	}
+
+	@Test
 	void executeScriptDoesNotExposeWorkspaceManagerBinding() {
 		provider = createProvider(true);
 		Map<String, SyncToolSpecification> tools = captureTools();

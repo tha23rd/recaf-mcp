@@ -113,7 +113,12 @@ dependencies {
 
     // Groovy scripting engine for execute-recaf-script tool.
     // NOT relocated: Groovy uses class names in metaclass internals.
-    shade 'org.apache.groovy:groovy:4.0.24'
+    // 5.0.x ships ASM that understands JDK 25 (class file major 69) so the
+    // semantic analysis phase can decompile JDK stdlib classes referenced by
+    // closures, lambdas, streams, FileOutputStream, TimeUnit, Math.min/max, etc.
+    // (recaf-mcp-pxl). Groovy 5 keeps source compatibility with Groovy 4 for
+    // the scripting features we expose.
+    shade 'org.apache.groovy:groovy:5.0.5'
 
     // Test
     testImplementation platform('org.junit:junit-bom:5.11.2')

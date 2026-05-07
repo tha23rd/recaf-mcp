@@ -55,7 +55,7 @@ java -Drecaf.mcp.script.execution.enabled=true -jar recaf.jar
 
 **Option A: Download release**
 
-Download `recaf-mcp-plugin-0.1.1.jar` from the [Releases](../../releases) page and copy it to your Recaf plugins directory:
+Download `recaf-mcp-plugin-0.2.0.jar` from the [Releases](../../releases) page and copy it to your Recaf plugins directory:
 
 | OS | Plugin Directory |
 |---------|----------------------------------------------|
@@ -71,7 +71,7 @@ cd recaf-mcp/recaf-mcp-plugin
 ./gradlew shadowJar
 ```
 
-Then copy `build/libs/recaf-mcp-plugin-0.1.1.jar` to your plugins directory (see table above).
+Then copy `build/libs/recaf-mcp-plugin-0.2.0.jar` to your plugins directory (see table above).
 
 ### Stdio Bridge (optional)
 
@@ -188,6 +188,56 @@ This feature executes user-provided code inside the Recaf JVM. Keep it disabled 
 | `RECAF_MCP_SCRIPT_EXECUTION_ENABLED` / `-Drecaf.mcp.script.execution.enabled` | `false` | Enables `execute-recaf-script` (disabled by default for safety) |
 
 Environment variables take priority over system properties.
+
+## Headless Mode (CI / Containers)
+
+Recaf ships a built-in `--headless` flag that skips the UI but keeps the
+plugin lifecycle intact. The MCP server comes up cleanly and serves all
+tools over HTTP. Verified on Linux with Recaf 4.x + plugin 0.2.0:
+
+- ~2.1 s boot to MCP listener (vs ~3 s full UI)
+- ~875 MB steady-state RSS (≈33 % less than full UI)
+- `search-tools`, `describe-recaf-api`, `execute-recaf-script` all respond
+- SSVM auto-discovers a JDK 11–17 install for boot classes
+- No `DISPLAY`, no GTK runtime, no Monocle native libs required
+
+### Launch
+
+JavaFX modules must still be on the module path — Recaf's CDI scan loads
+beans that reference `javafx.*` types even though no Stage is created.
+The display itself is never opened.
+
+```bash
+# locate the JavaFX 22.0.1 jars Recaf already pulls in
+JFX_BASE=$(find ~/.gradle/caches -name 'javafx-base-22*linux*.jar' | head -1)
+JFX_GRAPHICS=$(find ~/.gradle/caches -name 'javafx-graphics-22*linux*.jar' | head -1)
+JFX_CONTROLS=$(find ~/.gradle/caches -name 'javafx-controls-22*linux*.jar' | head -1)
+
+java \
+  --module-path "$JFX_BASE:$JFX_GRAPHICS:$JFX_CONTROLS" \
+  --add-modules javafx.controls,javafx.graphics,javafx.base \
+  --add-opens java.base/java.lang=ALL-UNNAMED \
+  --add-opens java.base/java.lang.reflect=ALL-UNNAMED \
+  --add-opens java.base/java.io=ALL-UNNAMED \
+  -jar recaf.jar --headless --input /path/to/target.jar
+```
+
+Add `RECAF_MCP_SCRIPT_EXECUTION_ENABLED=true` to the environment if you
+need `execute-recaf-script` (still off by default).
+
+### Notes & limitations
+
+- The `--input` flag is currently **required** in headless mode — there is
+  no MCP `open-workspace` tool yet, so the agent can only operate on the
+  workspace specified at launch. Multi-target sessions need a UI restart
+  until that tool lands.
+- Dropping the JavaFX module path entirely fails CDI bootstrap with
+  `Failed to create Recaf CDI container`. The jars are required even
+  though the toolkit never starts.
+- JavaFX's Monocle backend is **not** needed and is **not** present in the
+  standard `javafx-graphics-*-linux.jar` published since JDK 11. Don't
+  bother trying `-Dglass.platform=Monocle` — Recaf's native `--headless`
+  flag bypasses the Application launch path entirely.
 
 ## Response Format
 
